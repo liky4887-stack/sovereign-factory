@@ -22,6 +22,8 @@ import { GoalService } from '../goals/api/GoalService';
 import { createGoalRouter } from '../goals/http/GoalRouter';
 import { OfferService } from '../offers/api/OfferService';
 import { createOfferRouter } from '../offers/http/OfferRouter';
+import { SystemPowerService } from '../system-power/api/SystemPowerService';
+import { createSystemPowerRouter } from '../system-power/http/SystemPowerRouter';
 
 export interface TermuxBridgeServerOptions {
   ledger: LedgerService;
@@ -30,6 +32,7 @@ export interface TermuxBridgeServerOptions {
   agents: AgentService;
   goals: GoalService;
   offers: OfferService;
+  systemPower: SystemPowerService;
 }
 
 export class TermuxBridgeServer {
@@ -41,6 +44,7 @@ export class TermuxBridgeServer {
   private agents: AgentService;
   private goals: GoalService;
   private offers: OfferService;
+  private systemPower: SystemPowerService;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -49,6 +53,7 @@ export class TermuxBridgeServer {
     this.agents = opts.agents;
     this.goals = opts.goals;
     this.offers = opts.offers;
+    this.systemPower = opts.systemPower;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use(express.json({ limit: config.BODY_LIMIT }));
@@ -69,6 +74,7 @@ export class TermuxBridgeServer {
     this.app.use(createAgentRouter(this.agents));
     this.app.use(createGoalRouter(this.goals));
     this.app.use(createOfferRouter(this.offers));
+    this.app.use(createSystemPowerRouter(this.systemPower));
 
     this.app.use(errorHandler);
   }
@@ -84,6 +90,7 @@ export class TermuxBridgeServer {
     await this.agents.init();
     await this.goals.init();
     await this.offers.init();
+    await this.systemPower.init();
 
     return new Promise((resolve) => {
       this.server = this.app.listen(config.BRIDGE_PORT, config.HOST, async () => {

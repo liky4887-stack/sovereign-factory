@@ -26,6 +26,8 @@ import { GoalService } from '../../../packages/core/src/goals/api/GoalService';
 import { JsonGoalRepository } from '../../../packages/core/src/goals/storage/JsonGoalRepository';
 import { OfferService } from '../../../packages/core/src/offers/api/OfferService';
 import { JsonOfferRepository } from '../../../packages/core/src/offers/storage/JsonOfferRepository';
+import { SystemPowerService } from '../../../packages/core/src/system-power/api/SystemPowerService';
+import { JsonSystemPowerRepository } from '../../../packages/core/src/system-power/storage/JsonSystemPowerRepository';
 import { TermuxBridgeServer } from '../../../packages/core/src/termux-server/TermuxBridgeServer';
 import { TermuxBridgeClient } from '../../../packages/core/src/clients/TermuxBridgeClient';
 import { TruthLedgerClient } from '../../../packages/core/src/clients/TruthLedgerClient';
@@ -54,9 +56,20 @@ async function main(): Promise<void> {
   const agents = new AgentService(new JsonAgentRepository(config.AGENTS_FILE));
   const goals = new GoalService(new JsonGoalRepository(config.GOALS_FILE));
   const offers = new OfferService(new JsonOfferRepository(config.OFFERS_FILE));
+  const systemPower = new SystemPowerService(new JsonSystemPowerRepository(config.SYSTEM_POWER_FILE));
+
+  // Wire SystemPower toggles to the Truth Ledger
+  systemPower.setLedgerAppend(async (entry) => {
+    await ledger.append({
+      type: entry.type,
+      source: entry.source,
+      payload: entry.payload,
+      tags: entry.tags,
+    });
+  });
 
   // Bridge (8790)
-  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers });
+  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower });
   await bridgeServer.start();
 
   // Orchestrator (8791)
