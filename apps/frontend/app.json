@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "AI Factory Console",
+    "slug": "ai-factory-console",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "ios": { "supportsTablet": true, "bundleIdentifier": "com.aifactory.console" },
+    "android": { "package": "com.aifactory.console", "edgeToEdgeEnabled": true }
+  }
+}

@@ -1,0 +1,54 @@
+# deps
+node_modules/
+*/node_modules/
+**/node_modules/
+
+# builds
+dist/
+build/
+web-build/
+*.tsbuildinfo
+
+# expo
+.expo/
+.expo-shared/
+
+# env / secrets — DO NOT COMMIT
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+
+# cookies / sessions / runtime state
+cookies/
+.bridge-cookies/
+.ghost-bridge/
+.cf.log
+.simrun.json
+.git-credentials
+.lesshst
+.ssh/
+**/state/
+**/data/*.jsonl
+sovereign-core-data/
+packages/core/data/
+
+# logs
+*.log
+logs/
+npm-debug.log*
+
+# backups we keep on disk but not in git
+**/*.bak
+**/*.pre-*
+**/*.orig
+**/server.ts.pre-*
+
+# os
+.DS_Store
+Thumbs.db
+
+# legacy backup blobs (kept on disk, not pushed)
+legacy/bridge-20260923/
