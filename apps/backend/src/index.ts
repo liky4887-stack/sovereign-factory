@@ -29,6 +29,8 @@ import { JsonOfferRepository } from '../../../packages/core/src/offers/storage/J
 import { SystemPowerService } from '../../../packages/core/src/system-power/api/SystemPowerService';
 import { JsonSystemPowerRepository } from '../../../packages/core/src/system-power/storage/JsonSystemPowerRepository';
 import { GodModeService } from '../../../packages/core/src/god-mode/api/GodModeService';
+import { MysticRealmService } from '../../../packages/core/src/mystic-realm/api/MysticRealmService';
+import { JsonSoulRepository } from '../../../packages/core/src/mystic-realm/storage/JsonSoulRepository';
 import { TermuxBridgeServer } from '../../../packages/core/src/termux-server/TermuxBridgeServer';
 import { TermuxBridgeClient } from '../../../packages/core/src/clients/TermuxBridgeClient';
 import { TruthLedgerClient } from '../../../packages/core/src/clients/TruthLedgerClient';
@@ -70,9 +72,13 @@ async function main(): Promise<void> {
   });
 
   const godMode = new GodModeService({ ledger, projects, tasks, agents });
+  const mysticRealm = new MysticRealmService({
+    ledger, projects, tasks, goals,
+    soulRepo: new JsonSoulRepository(config.SOUL_FILE),
+  });
 
   // Bridge (8790)
-  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower, godMode });
+  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower, godMode, mysticRealm });
   await bridgeServer.start();
 
   // Orchestrator (8791)

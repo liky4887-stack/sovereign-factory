@@ -26,6 +26,8 @@ import { SystemPowerService } from '../system-power/api/SystemPowerService';
 import { createSystemPowerRouter } from '../system-power/http/SystemPowerRouter';
 import { GodModeService } from '../god-mode/api/GodModeService';
 import { createGodModeRouter } from '../god-mode/http/GodModeRouter';
+import { MysticRealmService } from '../mystic-realm/api/MysticRealmService';
+import { createMysticRealmRouter } from '../mystic-realm/http/MysticRealmRouter';
 
 export interface TermuxBridgeServerOptions {
   ledger: LedgerService;
@@ -36,6 +38,7 @@ export interface TermuxBridgeServerOptions {
   offers: OfferService;
   systemPower: SystemPowerService;
   godMode: GodModeService;
+  mysticRealm: MysticRealmService;
 }
 
 export class TermuxBridgeServer {
@@ -49,6 +52,7 @@ export class TermuxBridgeServer {
   private offers: OfferService;
   private systemPower: SystemPowerService;
   private godMode: GodModeService;
+  private mysticRealm: MysticRealmService;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -59,6 +63,7 @@ export class TermuxBridgeServer {
     this.offers = opts.offers;
     this.systemPower = opts.systemPower;
     this.godMode = opts.godMode;
+    this.mysticRealm = opts.mysticRealm;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use(express.json({ limit: config.BODY_LIMIT }));
@@ -81,6 +86,7 @@ export class TermuxBridgeServer {
     this.app.use(createOfferRouter(this.offers));
     this.app.use(createSystemPowerRouter(this.systemPower));
     this.app.use(createGodModeRouter(this.godMode));
+    this.app.use(createMysticRealmRouter(this.mysticRealm));
 
     this.app.use(errorHandler);
   }
@@ -98,6 +104,7 @@ export class TermuxBridgeServer {
     await this.offers.init();
     await this.systemPower.init();
     await this.godMode.init();
+    await this.mysticRealm.init();
 
     return new Promise((resolve) => {
       this.server = this.app.listen(config.BRIDGE_PORT, config.HOST, async () => {
