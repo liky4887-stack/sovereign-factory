@@ -28,6 +28,7 @@ import { OfferService } from '../../../packages/core/src/offers/api/OfferService
 import { JsonOfferRepository } from '../../../packages/core/src/offers/storage/JsonOfferRepository';
 import { SystemPowerService } from '../../../packages/core/src/system-power/api/SystemPowerService';
 import { JsonSystemPowerRepository } from '../../../packages/core/src/system-power/storage/JsonSystemPowerRepository';
+import { GodModeService } from '../../../packages/core/src/god-mode/api/GodModeService';
 import { TermuxBridgeServer } from '../../../packages/core/src/termux-server/TermuxBridgeServer';
 import { TermuxBridgeClient } from '../../../packages/core/src/clients/TermuxBridgeClient';
 import { TruthLedgerClient } from '../../../packages/core/src/clients/TruthLedgerClient';
@@ -68,8 +69,10 @@ async function main(): Promise<void> {
     });
   });
 
+  const godMode = new GodModeService({ ledger, projects, tasks, agents });
+
   // Bridge (8790)
-  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower });
+  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower, godMode });
   await bridgeServer.start();
 
   // Orchestrator (8791)

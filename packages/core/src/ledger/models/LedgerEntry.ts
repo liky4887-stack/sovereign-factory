@@ -16,7 +16,8 @@ export type LedgerEntryType =
   | 'HEALTH_CHECK'
   | 'SERVER_START'
   | 'SERVER_STOP'
-  | 'SYSTEM_POWER_TOGGLE';
+  | 'SYSTEM_POWER_TOGGLE'
+  | 'OMEGA_ACTION';
 
 export interface LedgerEntry {
   id: string;
