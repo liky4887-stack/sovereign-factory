@@ -87,6 +87,18 @@ function sanitizeJson(raw: string): string {
   return out;
 }
 
+function looksTruncated(raw: string): boolean {
+  const t = raw.trim();
+  if (!t) return true;
+  if (!t.endsWith('}')) return true;
+  const tail = t.slice(-200);
+  let q = 0;
+  for (let i = 0; i < tail.length; i++) {
+    if (tail[i] === '"' && (i === 0 || tail[i - 1] !== '\\')) q++;
+  }
+  return q % 2 === 1;
+}
+
 function tryParseJson(raw: string): any {
   try { return JSON.parse(raw); } catch {}
   try { return JSON.parse(sanitizeJson(raw)); } catch {}
@@ -163,12 +175,19 @@ export class ProjectBuilder {
     contextBlock: string,
     prompt: string,
     tailText: string,
+    temperature?: number,
   ): Promise<string> {
     const composed = headerText + '\n' + contextBlock + '\nUSER REQUEST:\n' + prompt + '\n' + tailText;
-    const response = await this.deepseek.callDeepSeek(composed, {
+    const opts: any = {
       thinkingEnabled: false,
       searchEnabled: false,
-    });
+      // DeepSeek caps a single response around 8k output tokens.
+      // Pass the maximum so large pages finish instead of truncating
+      // mid-string (which produces "Unterminated string in JSON").
+      maxTokens: 8192,
+    };
+    if (typeof temperature === 'number') opts.temperature = temperature;
+    const response = await this.deepseek.callDeepSeek(composed, opts);
     return (response && response.data && (response.data as any).content) || '';
   }
 
@@ -182,22 +201,38 @@ export class ProjectBuilder {
     const existing = this.storage.listFiles(projectId);
     const isEdit = existing.length > 0;
 
-    // Context block: on edits, include the current files.
+    // Context block: on edits, include the current files. To keep the
+    // input prompt small, truncate each file to its first 2 KB and mark
+    // it. That is enough for the AI to understand structure and names
+    // without blowing the input/output budget.
     let contextBlock = '';
     if (isEdit) {
+      const MAX_CTX_PER_FILE = 2048;
       const readOne = (rel: string): string => {
         try { return this.storage.readFile(projectId, rel); } catch { return ''; }
       };
-      const existingFiles = existing.map((f) => ({ path: f.path, content: readOne(f.path) }));
+      const summary = existing.map((f) => {
+        const raw = readOne(f.path);
+        if (raw.length <= MAX_CTX_PER_FILE) {
+          return '\n--- ' + f.path + ' (' + raw.length + ' bytes) ---\n' + raw;
+        }
+        return '\n--- ' + f.path + ' (' + raw.length + ' bytes, truncated to '
+          + MAX_CTX_PER_FILE + ') ---\n'
+          + raw.slice(0, MAX_CTX_PER_FILE)
+          + '\n…(' + (raw.length - MAX_CTX_PER_FILE) + ' more bytes omitted)';
+      });
       contextBlock = [
         '',
-        '=== CURRENT PROJECT FILES ===',
-        ...existingFiles.map((f) => '\n--- ' + f.path + ' ---\n' + f.content),
+        '=== CURRENT PROJECT FILES (truncated view) ===',
+        ...summary,
         '\n--- END OF CURRENT FILES ---',
         '',
         'The user is asking for a change or an addition to the site above.',
         'Return the FULL contents of every file you modify.',
         'New files are added; files you do not touch are preserved as-is.',
+        'IMPORTANT: split the output into multiple files. Do not emit',
+        'one giant file. HTML in index.html, CSS in style.css,',
+        'JS in script.js. Each file must be under 6 KB.',
       ].join('\n');
     }
 
@@ -210,6 +245,26 @@ export class ProjectBuilder {
     let parsed = extractJson(raw);
 
     // ---- One retry with an aggressive reminder ----
+    // Detect truncation before treating as a parse failure.
+    if (!parsed && looksTruncated(raw)) {
+      log.warn('project.build.truncated_retrying', {
+        projectId,
+        raw_length: raw.length,
+        tail: raw.trim().slice(-60),
+      });
+      const splitReminder = [
+        '',
+        '=== RETRY (previous response was cut off mid-file) ===',
+        'Your last response exceeded the output limit and was truncated.',
+        'Respond again with the SAME request, but split into smaller files:',
+        '- Put CSS in style.css, JS in script.js, HTML in index.html.',
+        '- Keep each file under 8 KB.',
+        '- Do not inline large images or base64 data.',
+      ].join('\n');
+      raw = await this.ask(HEADER, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1);
+      parsed = extractJson(raw);
+    }
+
     if (!parsed) {
       log.warn('project.build.parse_failed_retrying', {
         projectId,
@@ -290,9 +345,14 @@ export class ProjectBuilder {
     const rest = scored.filter((x) => x.score === 0);
     const chosen = matched.concat(rest).slice(0, 3);
 
-    const bodies = chosen.map(({ skill }) =>
-      '\n### SKILL: ' + skill.label + ' (' + skill.id + ')\n' + skill.content
-    ).join('\n');
+    // Cap each skill body so the skills block stays under ~4 KB total.
+    const MAX_BODY = 1400;
+    const bodies = chosen.map(({ skill }) => {
+      const body = skill.content.length > MAX_BODY
+        ? skill.content.slice(0, MAX_BODY) + '\n…(truncated)'
+        : skill.content;
+      return '\n### SKILL: ' + skill.label + ' (' + skill.id + ')\n' + body;
+    }).join('\n');
 
     return [
       '',
