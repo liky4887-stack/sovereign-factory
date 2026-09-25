@@ -6,11 +6,14 @@
  *   1. Canonical Truth Ledger (packages/core/src/ledger)
  *   2. Canonical Orchestrator (packages/core/src/orchestrator) on 8791
  *   3. Canonical Bridge HTTP server (packages/core/src/termux-server) on 8790
+ *   4. DeepSeek bridge (packages/core/src/deepseek) mounted at /deepseek/*
  *
  * Engines (fusion, persona, scout, sim, sales) are copied into
  * packages/core/src/engines but are NOT yet mounted here. Wiring them
  * is a follow-up task pending import-path verification. See MERGE_LOG.md.
  */
+
+import { existsSync, readFileSync } from 'node:fs';
 
 import { config } from '../../../packages/core/src/config';
 import { log } from '../../../packages/core/src/shared/logger';
@@ -38,6 +41,11 @@ import { TermuxBridgeClient } from '../../../packages/core/src/clients/TermuxBri
 import { TruthLedgerClient } from '../../../packages/core/src/clients/TruthLedgerClient';
 import { Orchestrator } from '../../../packages/core/src/orchestrator/Orchestrator';
 import { OrchestratorHttpServer } from '../../../packages/core/src/orchestrator/http/OrchestratorHttpServer';
+
+import { InMemoryCredentialStore } from '../../../packages/core/src/deepseek/storage/InMemoryCredentialStore';
+import { PowSolver } from '../../../packages/core/src/deepseek/pow/PowSolver';
+import { DeepSeekService } from '../../../packages/core/src/deepseek/api/DeepSeekService';
+import { CredentialsFileShape } from '../../../packages/core/src/deepseek/models/DeepSeekTypes';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -84,8 +92,73 @@ async function main(): Promise<void> {
     repo: new JsonIdeRepository(config.BLUEPRINTS_FILE),
   });
 
+  // ─── DeepSeek bridge ─────────────────────────────────────────────────
+  const deepseekCreds = new InMemoryCredentialStore();
+  const deepseekPow = new PowSolver(config.DEEPSEEK.wasmPath);
+  const deepseek = new DeepSeekService(deepseekCreds, deepseekPow, {
+    baseUrl: config.DEEPSEEK.baseUrl,
+    defaultTargetPath: config.DEEPSEEK.defaultTargetPath,
+    defaultModel: config.DEEPSEEK.defaultModel,
+    requestTimeoutMs: config.DEEPSEEK.requestTimeoutMs,
+    pathTokenTtlSafetyMs: config.DEEPSEEK.pathTokenTtlSafetyMs,
+  });
+
+  // Boot-time credential loading (file takes precedence over env vars).
+  if (config.DEEPSEEK.credentialsFile && existsSync(config.DEEPSEEK.credentialsFile)) {
+    try {
+      const raw = JSON.parse(readFileSync(config.DEEPSEEK.credentialsFile, 'utf8')) as CredentialsFileShape;
+      if (raw.bearerToken && raw.cookies) {
+        deepseek.setCredentials({
+          bearerToken: raw.bearerToken,
+          cookies: raw.cookies,
+          hifLeim: raw.hifLeim,
+          hifDliq: raw.hifDliq,
+          deviceId: raw.deviceId,
+        });
+        log.info('deepseek.credentials.loaded_from_file', {
+          path: config.DEEPSEEK.credentialsFile,
+        });
+      } else {
+        log.warn('deepseek.credentials.file_missing_fields', {
+          path: config.DEEPSEEK.credentialsFile,
+        });
+      }
+    } catch (e) {
+      log.warn('deepseek.credentials.file_unreadable', {
+        path: config.DEEPSEEK.credentialsFile,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  } else if (config.DEEPSEEK.envBearerToken && config.DEEPSEEK.envCookies) {
+    deepseek.setCredentials({
+      bearerToken: config.DEEPSEEK.envBearerToken,
+      cookies: config.DEEPSEEK.envCookies,
+    });
+    log.info('deepseek.credentials.loaded_from_env');
+  } else {
+    log.info('deepseek.credentials.absent', {
+      hint: 'POST /deepseek/credentials to set them at runtime',
+    });
+  }
+
+  if (!deepseekPow.wasmExists()) {
+    log.warn('deepseek.pow.wasm_missing', { path: config.DEEPSEEK.wasmPath });
+  }
+
   // Bridge (8790)
-  const bridgeServer = new TermuxBridgeServer({ ledger, projects, tasks, agents, goals, offers, systemPower, godMode, mysticRealm, ide });
+  const bridgeServer = new TermuxBridgeServer({
+    ledger,
+    projects,
+    tasks,
+    agents,
+    goals,
+    offers,
+    systemPower,
+    godMode,
+    mysticRealm,
+    ide,
+    deepseek,
+  });
   await bridgeServer.start();
 
   // Orchestrator (8791)

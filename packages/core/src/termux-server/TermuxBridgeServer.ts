@@ -30,6 +30,9 @@ import { MysticRealmService } from '../mystic-realm/api/MysticRealmService';
 import { createMysticRealmRouter } from '../mystic-realm/http/MysticRealmRouter';
 import { IdeService } from '../ide/api/IdeService';
 import { createIdeRouter } from '../ide/http/IdeRouter';
+import { DeepSeekService } from '../deepseek/api/DeepSeekService';
+import { createDeepSeekRouter } from '../deepseek/http/DeepSeekRouter';
+import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
   ledger: LedgerService;
@@ -42,6 +45,7 @@ export interface TermuxBridgeServerOptions {
   godMode: GodModeService;
   mysticRealm: MysticRealmService;
   ide: IdeService;
+  deepseek: DeepSeekService;
 }
 
 export class TermuxBridgeServer {
@@ -57,6 +61,7 @@ export class TermuxBridgeServer {
   private godMode: GodModeService;
   private mysticRealm: MysticRealmService;
   private ide: IdeService;
+  private deepseek: DeepSeekService;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -69,8 +74,10 @@ export class TermuxBridgeServer {
     this.godMode = opts.godMode;
     this.mysticRealm = opts.mysticRealm;
     this.ide = opts.ide;
+    this.deepseek = opts.deepseek;
     this.app = express();
     this.app.disable('x-powered-by');
+    this.app.use('/bridge', express.raw({ type: '*/*', limit: '20mb' }));
     this.app.use(express.json({ limit: config.BODY_LIMIT }));
     this.app.use(loggingMiddleware);
 
@@ -93,6 +100,8 @@ export class TermuxBridgeServer {
     this.app.use(createGodModeRouter(this.godMode));
     this.app.use(createMysticRealmRouter(this.mysticRealm));
     this.app.use(createIdeRouter(this.ide));
+    this.app.use('/deepseek', createDeepSeekRouter(this.deepseek));
+    this.app.use(bridgeProxyRouter);
 
     this.app.use(errorHandler);
   }
@@ -124,6 +133,7 @@ export class TermuxBridgeServer {
             requireAuth: config.REQUIRE_AUTH,
             allowedCommands: config.ALLOWED_COMMANDS.length,
             allowedPaths: config.ALLOWED_PATHS,
+            deepseekWasmPresent: this.deepseek ? true : false,
           },
           tags: ['bridge', 'startup'],
         });

@@ -1,54 +1,62 @@
-# deps
+# ─── Node / npm ───────────────────────────────────────────────
 node_modules/
-*/node_modules/
-**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 
-# builds
+# ─── Build / output (all frameworks) ──────────────────────────
 dist/
 build/
-web-build/
+out/
+.next/
+.nuxt/
+.expo/
+.web-build/
 *.tsbuildinfo
 
-# expo
-.expo/
-.expo-shared/
+# ─── Runtime artifacts ────────────────────────────────────────
+logs/
+*.log
+*.pid
+*.tmp
 
-# env / secrets — DO NOT COMMIT
+# ─── Backup / scratch ─────────────────────────────────────────
+*.bak
+*.bak[0-9]*
+*.bak-*
+*.save
+*.orig
+*.rej
+=*
+
+# ─── Environment / secrets ────────────────────────────────────
 .env
 .env.*
 !.env.example
 *.pem
 *.key
-*.p12
 
-# cookies / sessions / runtime state
-cookies/
-.bridge-cookies/
-.ghost-bridge/
-.cf.log
-.simrun.json
-.git-credentials
-.lesshst
-.ssh/
-**/state/
-**/data/*.jsonl
+# ─── Runtime data (never track live state) ────────────────────
+data/
 sovereign-core-data/
-packages/core/data/
+cookies/
+*.sqlite
+*.sqlite3
+*.db
 
-# logs
-*.log
-logs/
-npm-debug.log*
+# ─── Legacy archives (never re-add) ───────────────────────────
+legacy/
+apps/bridge/
+packages/bridge/
 
-# backups we keep on disk but not in git
-**/*.bak
-**/*.pre-*
-**/*.orig
-**/server.ts.pre-*
-
-# os
+# ─── OS / editors ─────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+.vscode/
+.idea/
+*.iml
 
-# legacy backup blobs (kept on disk, not pushed)
-legacy/bridge-20260923/
+# ─── Termux ───────────────────────────────────────────────────
+.tmp/
+*.deb
