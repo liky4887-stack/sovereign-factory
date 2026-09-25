@@ -32,6 +32,7 @@ import { IdeService } from '../ide/api/IdeService';
 import { createIdeRouter } from '../ide/http/IdeRouter';
 import { DeepSeekService } from '../deepseek/api/DeepSeekService';
 import { createDeepSeekRouter } from '../deepseek/http/DeepSeekRouter';
+import { createEventsRouter } from '../events/http/EventsRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -101,6 +102,7 @@ export class TermuxBridgeServer {
     this.app.use(createMysticRealmRouter(this.mysticRealm));
     this.app.use(createIdeRouter(this.ide));
     this.app.use('/deepseek', createDeepSeekRouter(this.deepseek));
+    this.app.use('/events', createEventsRouter());
     this.app.use(bridgeProxyRouter);
 
     this.app.use(errorHandler);

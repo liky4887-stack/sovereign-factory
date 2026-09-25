@@ -46,6 +46,7 @@ import { InMemoryCredentialStore } from '../../../packages/core/src/deepseek/sto
 import { PowSolver } from '../../../packages/core/src/deepseek/pow/PowSolver';
 import { DeepSeekService } from '../../../packages/core/src/deepseek/api/DeepSeekService';
 import { CredentialsFileShape } from '../../../packages/core/src/deepseek/models/DeepSeekTypes';
+import { UEB, registerTermuxHandler, registerChatHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerResultHandlers } from '../../../packages/core/src/events';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -144,6 +145,16 @@ async function main(): Promise<void> {
   if (!deepseekPow.wasmExists()) {
     log.warn('deepseek.pow.wasm_missing', { path: config.DEEPSEEK.wasmPath });
   }
+
+  // Universal Event Bus — register handlers before HTTP boot
+  const commandRunner = new (require('../../../packages/core/src/termux-server/services/CommandRunner').CommandRunner)();
+  registerTermuxHandler(commandRunner);
+  registerChatHandler();
+  registerChatIntentRouter();
+  registerMysticHandler(mysticRealm);
+  registerGodModeHandler(godMode);
+  registerResultHandlers();
+  log.info('ueb.boot.ready', { handlers: ['termuxHandler', 'chatHandler', 'chatIntentRouter', 'mysticHandler', 'godmodeHandler', 'resultHandlers'] });
 
   // Bridge (8790)
   const bridgeServer = new TermuxBridgeServer({

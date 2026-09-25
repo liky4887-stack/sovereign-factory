@@ -14,6 +14,62 @@ import {
   DeepSeekAuthError,
   DeepSeekNoCredentialsError,
 } from '../models/DeepSeekErrors';
+import { UEB, EVENTS, peekRoute, pendingResults } from '../../events';
+
+/**
+ * DeepSeek streams JSON-Patch style SSE frames. Three shapes:
+ *   1. Initial:  {"v":{"response":{"fragments":[{"content":"Hello"}]}}}
+ *   2. Patch:    {"p":"response/fragments/-1/content","o":"APPEND","v":" there"}
+ *   3. Bare:     {"v":" how"}  -- continues the last active content path
+ *
+ * The helper below tracks a running text buffer across frames. It returns
+ * the delta produced by the current payload (empty string if nothing added).
+ */
+interface SseState {
+  text: string;
+  lastPath: string | null;
+}
+
+function applySsePayload(payload: string, state: SseState): string {
+  if (!payload || payload === '[DONE]') return '';
+
+  let j: any;
+  try { j = JSON.parse(payload); } catch { return ''; }
+
+  const before = state.text.length;
+
+  // Case 1: initial frame with fragments array.
+  if (j.v && typeof j.v === 'object' && j.v.response) {
+    const frags = j.v.response.fragments;
+    if (Array.isArray(frags)) {
+      for (const f of frags) {
+        if (f && typeof f.content === 'string') {
+          state.text += f.content;
+        }
+      }
+    }
+    state.lastPath = 'response/fragments/-1/content';
+    return state.text.slice(before);
+  }
+
+  // Case 2: explicit JSON patch {p, o, v}.
+  if (typeof j.p === 'string' && typeof j.o === 'string') {
+    if (j.p.includes('content') && typeof j.v === 'string') {
+      if (j.o === 'APPEND') state.text += j.v;
+      else if (j.o === 'SET') state.text = j.v;
+    }
+    state.lastPath = j.p;
+    return state.text.slice(before);
+  }
+
+  // Case 3: bare continuation {v: "..."} — append to last content path.
+  if (typeof j.v === 'string' && state.lastPath && state.lastPath.includes('content')) {
+    state.text += j.v;
+    return state.text.slice(before);
+  }
+
+  return '';
+}
 
 export class DeepSeekService {
   private readonly pathTokens = new Map<string, PathToken>();
@@ -214,6 +270,71 @@ export class DeepSeekService {
     const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
     const prompt = this.promptFromInput(input);
 
+    const correlation_id = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+    const route = peekRoute(prompt, correlation_id);
+
+    // If /run matched, register the waiter BEFORE emitting so we don't
+    // race the termuxHandler's async resolution.
+    let commandPromise: Promise<any> | null = null;
+    if (route && route.ruleName === 'termux.run') {
+      commandPromise = pendingResults.wait(correlation_id, 35000);
+    }
+
+    // Emit CHAT.COMMAND_PARSED and await the full handler chain. If the
+    // route is termux.run, this also runs the command and resolves the
+    // pending promise before we return.
+    await UEB.emit({
+      event_type: EVENTS.CHAT_COMMAND_PARSED,
+      source: 'CHAT',
+      timestamp: Date.now(),
+      correlation_id,
+      payload: { prompt, correlation_id, target_path: targetPath },
+    });
+
+    // Slash command routing.
+    if (route) {
+      if (route.ruleName === 'termux.run' && commandPromise) {
+        try {
+          const cmdResult: any = await commandPromise;
+          const parts: string[] = [];
+          const stdout = String(cmdResult && cmdResult.stdout || '').trimEnd();
+          const stderr = String(cmdResult && cmdResult.stderr || '').trimEnd();
+          if (stdout) parts.push(stdout);
+          if (stderr) parts.push('[stderr]\n' + stderr);
+          parts.push('(exit ' + (cmdResult && cmdResult.exit_code != null ? cmdResult.exit_code : -1) + ')');
+          return {
+            code: 0,
+            msg: '',
+            data: {
+              content: parts.join('\n'),
+              chat_session_id: null,
+              message_id: null,
+            },
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            code: 0,
+            msg: '',
+            data: {
+              content: 'run failed: ' + msg,
+              chat_session_id: null,
+              message_id: null,
+            },
+          };
+        }
+      }
+      return {
+        code: 0,
+        msg: '',
+        data: {
+          content: route.receipt,
+          chat_session_id: null,
+          message_id: null,
+        },
+      };
+    }
+
     const ch = await this.createPowChallenge(targetPath);
     const answer = await this.pow.solve(ch.challenge, ch.salt, ch.expireAt, ch.difficulty);
     const powHeader = this.buildPowHeader(ch, answer, targetPath);
@@ -225,7 +346,7 @@ export class DeepSeekService {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
 
-    let response;
+    let response: Response;
     try {
       response = await fetch(url, {
         method: 'POST',
@@ -242,21 +363,17 @@ export class DeepSeekService {
       throw new DeepSeekApiError(-1, 'HTTP ' + response.status + ': ' + text.slice(0, 300), response.status);
     }
 
-    // DeepSeek always returns SSE here, even with stream:false.
-    // Accumulate text fragments from the stream.
+    const state: SseState = { text: '', lastPath: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    let accumulated = '';
-    let sessionId_seen: string | null = sessionId;
-    let messageId: number | null = null;
 
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      let idx;
+      let idx: number;
       while ((idx = buffer.indexOf('\n\n')) !== -1) {
         const block = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 2);
@@ -264,30 +381,8 @@ export class DeepSeekService {
         for (const line of block.split('\n')) {
           if (!line.startsWith('data:')) continue;
           const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-
-          let parsed;
-          try { parsed = JSON.parse(payload); } catch { continue; }
-
-          // Shape 1: {"v":{"response":{"content":"..."}}}
-          const vResp = parsed && parsed.v && parsed.v.response;
-          if (vResp) {
-            if (typeof vResp.content === 'string' && vResp.content.length > 0) {
-              accumulated += vResp.content;
-            }
-            if (typeof vResp.message_id === 'number') messageId = vResp.message_id;
-          }
-
-          // Shape 2: OpenAI-style
-          const delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
-          if (delta && typeof delta.content === 'string') {
-            accumulated += delta.content;
-          }
-
-          // Shape 3: bare content field
-          if (!vResp && !delta && typeof parsed.content === 'string') {
-            accumulated += parsed.content;
-          }
+          if (!payload) continue;
+          applySsePayload(payload, state);
         }
       }
     }
@@ -297,9 +392,9 @@ export class DeepSeekService {
       code: 0,
       msg: '',
       data: {
-        content: accumulated,
-        chat_session_id: sessionId_seen,
-        message_id: messageId,
+        content: state.text,
+        chat_session_id: sessionId,
+        message_id: null,
       },
     };
   }
@@ -329,6 +424,7 @@ export class DeepSeekService {
       return;
     }
 
+    const state: SseState = { text: '', lastPath: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -345,30 +441,12 @@ export class DeepSeekService {
           buffer = buffer.slice(idx + 2);
 
           for (const line of block.split('\n')) {
-            const isData = line.startsWith('data:');
-            const isEvent = line.startsWith('event:');
-            if (isEvent) {
-              const evt = line.slice(6).trim();
-              if (evt === 'finish') { yield { type: 'done' }; return; }
-            }
-            if (!isData) continue;
+            if (!line.startsWith('data:')) continue;
             const payload = line.slice(5).trim();
-            if (payload.length === 0) continue;
+            if (!payload) continue;
             if (payload === '[DONE]') { yield { type: 'done' }; return; }
-            try {
-              const parsed = JSON.parse(payload);
-              // DeepSeek SSE shapes vary: pick content wherever it lives.
-              const content =
-                parsed?.choices?.[0]?.delta?.content ??
-                parsed?.choices?.[0]?.message?.content ??
-                parsed?.data?.biz_data?.choices?.[0]?.delta?.content ??
-                parsed?.content ??
-                parsed?.text ??
-                '';
-              if (content) yield { type: 'chunk', content, raw: payload };
-            } catch {
-              yield { type: 'chunk', content: payload, raw: payload };
-            }
+            const delta = applySsePayload(payload, state);
+            if (delta) yield { type: 'chunk', content: delta, raw: payload };
           }
         }
       }
