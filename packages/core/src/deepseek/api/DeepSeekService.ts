@@ -379,6 +379,17 @@ export class DeepSeekService {
             lines.push('  ' + st.order + '. ' + st.action);
             lines.push('     └ ' + st.rationale);
           });
+          if (r.dispatch && r.dispatch.kind && r.dispatch.kind !== 'audit') {
+            lines.push('');
+            lines.push('dispatched: ' + r.dispatch.kind + ' -> ' + (r.dispatch.event_type || '?'));
+            if (r.dispatch.error) lines.push('  error: ' + r.dispatch.error);
+            else if (r.dispatch.kind === 'write' && r.dispatch.payload && (r.dispatch.payload as any).path) {
+              lines.push('  path: ' + (r.dispatch.payload as any).path);
+            }
+          } else if (r.dispatch) {
+            lines.push('');
+            lines.push('dispatched: (no concrete action - audit only)');
+          }
           return {
             code: 0,
             msg: '',

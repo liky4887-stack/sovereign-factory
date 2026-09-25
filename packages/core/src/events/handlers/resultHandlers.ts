@@ -32,8 +32,43 @@ export function registerResultHandlers(): void {
     });
   });
 
+  UEB.on(EVENTS.SOVEREIGN_MISSION_STEP, (event) => {
+    const p = event.payload as any;
+    log.info('result.mission.step', {
+      correlation_id: event.correlation_id,
+      manifest_id: p?.manifest_id,
+      order: p?.order,
+    });
+  });
+
+  UEB.on(EVENTS.SOVEREIGN_MISSION_COMPLETE, (event) => {
+    const p = event.payload as any;
+    log.info('result.mission.complete', {
+      correlation_id: event.correlation_id,
+      manifest_id: p?.id,
+      dispatched: p?.dispatched,
+      dispatch_kind: p?.dispatch?.kind,
+    });
+  });
+
+  UEB.on(EVENTS.SOVEREIGN_MISSION_STEP_DONE, (event) => {
+    const p = event.payload as any;
+    log.info('result.mission.step_done', {
+      correlation_id: event.correlation_id,
+      manifest_id: p?.manifest_id,
+      order: p?.order,
+    });
+  });
+
   log.info('ueb.handler.registered', {
     handler: 'resultHandlers',
-    events: [EVENTS.MYSTIC_SPEC_READY, EVENTS.GODMODE_REPORT],
+    events: [
+      EVENTS.MYSTIC_SPEC_READY,
+      EVENTS.GODMODE_REPORT,
+      EVENTS.TERMUX_COMMAND_RESULT,
+      EVENTS.SOVEREIGN_MISSION_STEP,
+      EVENTS.SOVEREIGN_MISSION_COMPLETE,
+      EVENTS.SOVEREIGN_MISSION_STEP_DONE,
+    ],
   });
 }
