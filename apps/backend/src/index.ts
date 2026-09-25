@@ -46,7 +46,9 @@ import { InMemoryCredentialStore } from '../../../packages/core/src/deepseek/sto
 import { PowSolver } from '../../../packages/core/src/deepseek/pow/PowSolver';
 import { DeepSeekService } from '../../../packages/core/src/deepseek/api/DeepSeekService';
 import { CredentialsFileShape } from '../../../packages/core/src/deepseek/models/DeepSeekTypes';
-import { UEB, registerTermuxHandler, registerChatHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerWorkspaceHandler, registerResultHandlers } from '../../../packages/core/src/events';
+import { UEB, registerTermuxHandler, registerChatHandler, registerChatPersistHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerWorkspaceHandler, registerResultHandlers } from '../../../packages/core/src/events';
+import { ChatService } from '../../../packages/core/src/chat/api/ChatService';
+import { JsonChatRepository } from '../../../packages/core/src/chat/storage/JsonChatRepository';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -92,6 +94,10 @@ async function main(): Promise<void> {
     ledger,
     repo: new JsonIdeRepository(config.BLUEPRINTS_FILE),
   });
+
+  // Chat history service (persists to ~/sovereign-core-data/chat/sessions.json)
+  const chat = new ChatService(new JsonChatRepository(config.CHAT_FILE));
+
 
   // ─── DeepSeek bridge ─────────────────────────────────────────────────
   const deepseekCreds = new InMemoryCredentialStore();
@@ -154,8 +160,9 @@ async function main(): Promise<void> {
   registerMysticHandler(mysticRealm);
   registerGodModeHandler(godMode);
   registerWorkspaceHandler();
+  registerChatPersistHandler(chat);
   registerResultHandlers();
-  log.info('ueb.boot.ready', { handlers: ['termuxHandler', 'chatHandler', 'chatIntentRouter', 'mysticHandler', 'godmodeHandler', 'workspaceHandler', 'resultHandlers'] });
+  log.info('ueb.boot.ready', { handlers: ['termuxHandler', 'chatHandler', 'chatPersistHandler', 'chatIntentRouter', 'mysticHandler', 'godmodeHandler', 'workspaceHandler', 'resultHandlers'] });
 
   // Bridge (8790)
   const bridgeServer = new TermuxBridgeServer({
@@ -170,6 +177,7 @@ async function main(): Promise<void> {
     mysticRealm,
     ide,
     deepseek,
+    chat,
   });
   await bridgeServer.start();
 

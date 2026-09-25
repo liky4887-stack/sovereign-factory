@@ -33,6 +33,8 @@ import { createIdeRouter } from '../ide/http/IdeRouter';
 import { DeepSeekService } from '../deepseek/api/DeepSeekService';
 import { createDeepSeekRouter } from '../deepseek/http/DeepSeekRouter';
 import { createEventsRouter } from '../events/http/EventsRouter';
+import { ChatService } from '../chat/api/ChatService';
+import { createChatRouter } from '../chat/http/ChatRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -47,6 +49,7 @@ export interface TermuxBridgeServerOptions {
   mysticRealm: MysticRealmService;
   ide: IdeService;
   deepseek: DeepSeekService;
+  chat: ChatService;
 }
 
 export class TermuxBridgeServer {
@@ -63,6 +66,7 @@ export class TermuxBridgeServer {
   private mysticRealm: MysticRealmService;
   private ide: IdeService;
   private deepseek: DeepSeekService;
+  private chat: ChatService;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -76,6 +80,7 @@ export class TermuxBridgeServer {
     this.mysticRealm = opts.mysticRealm;
     this.ide = opts.ide;
     this.deepseek = opts.deepseek;
+    this.chat = opts.chat;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use('/bridge', express.raw({ type: '*/*', limit: '20mb' }));
@@ -103,6 +108,7 @@ export class TermuxBridgeServer {
     this.app.use(createIdeRouter(this.ide));
     this.app.use('/deepseek', createDeepSeekRouter(this.deepseek));
     this.app.use('/events', createEventsRouter());
+    this.app.use('/chat', createChatRouter(this.chat));
     this.app.use(bridgeProxyRouter);
 
     this.app.use(errorHandler);
@@ -123,6 +129,7 @@ export class TermuxBridgeServer {
     await this.godMode.init();
     await this.mysticRealm.init();
     await this.ide.init();
+    await this.chat.init();
 
     return new Promise((resolve) => {
       this.server = this.app.listen(config.BRIDGE_PORT, config.HOST, async () => {

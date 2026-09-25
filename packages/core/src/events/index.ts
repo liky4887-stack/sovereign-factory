@@ -3,6 +3,7 @@ export { EventBus, UEB } from './EventBus';
 export { pendingResults } from './PendingResults';
 export { registerTermuxHandler } from './handlers/termuxHandler';
 export { registerChatHandler } from './handlers/chatHandler';
+export { registerChatPersistHandler } from './handlers/chatPersistHandler';
 export { registerChatIntentRouter, peekRoute } from './handlers/chatIntentRouter';
 export type { RoutePeek } from './handlers/chatIntentRouter';
 export { registerMysticHandler } from './handlers/mysticHandler';

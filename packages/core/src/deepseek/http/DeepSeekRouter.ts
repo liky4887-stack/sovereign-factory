@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { DeepSeekService } from '../api/DeepSeekService';
+import { UEB, EVENTS } from '../../events';
 import {
   DeepSeekApiError,
   DeepSeekAuthError,
@@ -100,6 +101,33 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
         return;
       }
       const result = await service.callDeepSeek(input, options);
+
+      // Persist both sides of the turn via the event bus.
+      const promptText = typeof input === 'string'
+        ? input
+        : (Array.isArray(input) ? (input.find((m: any) => m.role === 'user')?.content ?? '') : '');
+      const assistantText = (result && result.data && typeof (result.data as any).content === 'string')
+        ? (result.data as any).content
+        : '';
+
+      // Await sequentially so persist order matches conversation order.
+      if (promptText) {
+        await UEB.emit({
+          event_type: EVENTS.CHAT_USER_MESSAGE,
+          source: 'CHAT',
+          timestamp: Date.now(),
+          payload: { prompt: promptText },
+        });
+      }
+      if (assistantText) {
+        await UEB.emit({
+          event_type: EVENTS.CHAT_ASSISTANT_MESSAGE,
+          source: 'CHAT',
+          timestamp: Date.now(),
+          payload: { content: assistantText },
+        });
+      }
+
       res.json({ ok: true, response: result });
     } catch (err) {
       sendError(res, err);

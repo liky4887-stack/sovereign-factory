@@ -46,6 +46,7 @@ export const config = Object.freeze({
   SYSTEM_POWER_FILE: env('SYSTEM_POWER_FILE', path.join(DATA_DIR, 'system-power', 'state.json')),
   SOUL_FILE: env('SOUL_FILE', path.join(DATA_DIR, 'mystic-realm', 'soul.json')),
   BLUEPRINTS_FILE: env('BLUEPRINTS_FILE', path.join(DATA_DIR, 'ide', 'blueprints.json')),
+  CHAT_FILE: env('CHAT_FILE', path.join(DATA_DIR, 'chat', 'sessions.json')),
   LOG_LEVEL: env('LOG_LEVEL', 'info') as 'debug' | 'info' | 'warn' | 'error',
   BODY_LIMIT: env('BODY_LIMIT', '2mb'),
   DATA_DIR,
