@@ -35,6 +35,7 @@ import { createDeepSeekRouter } from '../deepseek/http/DeepSeekRouter';
 import { createEventsRouter } from '../events/http/EventsRouter';
 import { ChatService } from '../chat/api/ChatService';
 import { createChatRouter } from '../chat/http/ChatRouter';
+import { createAuthDebugRouter } from '../debug/http/AuthDebugRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -109,6 +110,7 @@ export class TermuxBridgeServer {
     this.app.use('/deepseek', createDeepSeekRouter(this.deepseek));
     this.app.use('/events', createEventsRouter());
     this.app.use('/chat', createChatRouter(this.chat));
+    this.app.use('/debug', createAuthDebugRouter());
     this.app.use(bridgeProxyRouter);
 
     this.app.use(errorHandler);

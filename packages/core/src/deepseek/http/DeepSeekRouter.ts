@@ -1,5 +1,9 @@
 import { Router, Request, Response } from 'express';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { DeepSeekService } from '../api/DeepSeekService';
+import { config } from '../../config';
+import { log } from '../../shared/logger';
 import { UEB, EVENTS } from '../../events';
 import {
   DeepSeekApiError,
@@ -45,12 +49,44 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
     try {
       const { bearerToken, cookies, hifLeim, hifDliq, deviceId } = req.body ?? {};
       const stored = service.setCredentials({ bearerToken, cookies, hifLeim, hifDliq, deviceId });
+
+      // Persist to disk so the values survive a backend restart.
+      let persisted = false;
+      let persistPath: string | null = null;
+      const file = config.DEEPSEEK.credentialsFile;
+      if (file) {
+        try {
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          const payload = {
+            bearerToken: stored.bearerToken,
+            cookies: stored.cookies,
+            ...(hifLeim !== undefined ? { hifLeim } : {}),
+            ...(hifDliq !== undefined ? { hifDliq } : {}),
+            ...(deviceId !== undefined ? { deviceId } : {}),
+          };
+          fs.writeFileSync(file, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
+          persisted = true;
+          persistPath = file;
+          log.info('deepseek.credentials.persisted', { path: file });
+        } catch (e) {
+          log.error('deepseek.credentials.persist_error', {
+            path: file,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+
       res.json({
         ok: true,
         stored: {
           bearerLength: stored.bearerToken.length,
           cookiesLength: stored.cookies.length,
+          hasHifLeim: !!hifLeim,
+          hasHifDliq: !!hifDliq,
+          hasDeviceId: !!deviceId,
         },
+        persisted,
+        path: persistPath,
       });
     } catch (err) {
       sendError(res, err);
