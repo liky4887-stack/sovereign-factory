@@ -73,6 +73,9 @@ function applySsePayload(payload: string, state: SseState): string {
 
 export class DeepSeekService {
   private readonly pathTokens = new Map<string, PathToken>();
+  private lastChatAt: number | null = null;
+  private lastChatOk: boolean | null = null;
+  private lastChatError: string | null = null;
 
   constructor(
     private readonly creds: CredentialStore,
@@ -449,6 +452,9 @@ export class DeepSeekService {
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');
+      this.lastChatAt = Date.now();
+      this.lastChatOk = false;
+      this.lastChatError = 'HTTP ' + response.status;
       throw new DeepSeekApiError(-1, 'HTTP ' + response.status + ': ' + text.slice(0, 300), response.status);
     }
 
@@ -476,6 +482,10 @@ export class DeepSeekService {
       }
     }
     try { reader.releaseLock(); } catch (_) {}
+
+    this.lastChatAt = Date.now();
+    this.lastChatOk = true;
+    this.lastChatError = null;
 
     return {
       code: 0,
@@ -565,6 +575,9 @@ export class DeepSeekService {
     cachedPathTokens: number;
     bearerValid: boolean | null;
     lastError?: string;
+    lastChatAt: number | null;
+    lastChatOk: boolean | null;
+    lastChatError: string | null;
   }> {
     const c = this.getCredentialsRedacted();
     const out = {
@@ -580,6 +593,9 @@ export class DeepSeekService {
       cachedPathTokens: this.pathTokens.size,
       bearerValid: null as boolean | null,
       lastError: undefined as string | undefined,
+      lastChatAt: this.lastChatAt,
+      lastChatOk: this.lastChatOk,
+      lastChatError: this.lastChatError,
     };
     if (!c.configured) return out;
     try {

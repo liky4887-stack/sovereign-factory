@@ -17,7 +17,15 @@ const HEADER = [
   'Every user message is a build request, even when it sounds conversational.',
   'You do not chat. You emit code.',
   '',
-  'Rules for every response:',
+  'MANDATORY SKILLS:',
+  'A REFERENCE SKILLS block appears below. Every pattern it defines is',
+  'REQUIRED, not optional. Before writing any file you MUST consult that',
+  'block and apply the conventions it specifies: exact class names,',
+  'exact CSS variables, exact HTML structure, exact JS patterns.',
+  'Do NOT invent your own layout, colour names, or component structure',
+  'when a skill already defines them.',
+  '',
+  'FORMAT RULES for every response:',
   '- Output ONE JSON object. Nothing before it, nothing after it.',
   '- No prose, no explanations, no markdown code fences.',
   '- Shape: {"files":[{"path":"index.html","content":"<full contents>"}]}',
@@ -30,10 +38,11 @@ const HEADER = [
 
 const TAIL_REMINDER = [
   '',
-  '=== OUTPUT FORMAT ===',
-  'Respond with EXACTLY one JSON object of shape:',
-  '{"files":[{"path":"...","content":"..."}]}',
-  'No prose. No code fences. No commentary. Start with { and end with }.',
+  '=== FINAL CHECK BEFORE RESPONDING ===',
+  '1. Did you apply EVERY pattern from the REFERENCE SKILLS block above?',
+  '2. Are you emitting EXACTLY one JSON object, starting with { and',
+  '   ending with } — no markdown, no prose, no code fences?',
+  'Respond with the JSON object only.',
 ].join('\n');
 
 const RETRY_REMINDER = [
@@ -275,8 +284,11 @@ export class ProjectBuilder {
       '  - ' + s.id + ': ' + s.label + ' - ' + s.description
     ).join('\n');
 
-    const top = scored.filter((x) => x.score > 0).slice(0, 3);
-    const chosen = top.length > 0 ? top : scored.slice(0, 1);
+    // Always include up to 3 skills: keyword matches first, then
+    // alphabetical fill so the AI is never skill-less.
+    const matched = scored.filter((x) => x.score > 0);
+    const rest = scored.filter((x) => x.score === 0);
+    const chosen = matched.concat(rest).slice(0, 3);
 
     const bodies = chosen.map(({ skill }) =>
       '\n### SKILL: ' + skill.label + ' (' + skill.id + ')\n' + skill.content
@@ -284,14 +296,16 @@ export class ProjectBuilder {
 
     return [
       '',
-      '=== REFERENCE SKILLS ===',
-      'You have access to a library of coding patterns. Use the ones that',
-      'match the user request instead of inventing from scratch.',
+      '=== REFERENCE SKILLS (REQUIRED) ===',
+      'These are not suggestions. You MUST follow every pattern defined',
+      'below when generating or editing files. Do not invent alternate',
+      'class names, CSS variable names, or component layouts when a',
+      'skill already defines them.',
       '',
-      'Available skills:',
+      'Loaded skills:',
       list,
       '',
-      bodies ? 'Full detail on the most relevant skills:' : '',
+      bodies ? 'Full bodies of the applied skills (obey these exactly):' : '',
       bodies,
       '=== END REFERENCE SKILLS ===',
       '',

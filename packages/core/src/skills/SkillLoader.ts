@@ -254,4 +254,59 @@ export class SkillLoader {
     walk(dir);
     return out;
   }
+
+  /**
+   * Fetch a markdown skill from a public URL, save it to
+   * <localDir>/<slug>/SKILL.md, and reload. Returns the new skill.
+   */
+  async importFromUrl(url: string): Promise<Skill> {
+    if (!this.opts.localDir) throw new Error('SKILLS_LOCAL_DIR not configured');
+
+    let parsed: URL;
+    try { parsed = new URL(url); } catch { throw new Error('invalid URL'); }
+    if (!/^https?:$/.test(parsed.protocol)) throw new Error('only http(s) URLs are allowed');
+
+    // Convert github blob links to raw.
+    let fetchUrl = url;
+    const gh = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/);
+    if (gh) {
+      fetchUrl = 'https://raw.githubusercontent.com/' + gh[1] + '/' + gh[2] + '/' + gh[3] + '/' + gh[4];
+    }
+
+    const r = await fetch(fetchUrl, {
+      headers: { 'user-agent': 'sovereign-skills', 'accept': 'text/*' },
+    });
+    if (!r.ok) throw new Error('fetch failed HTTP ' + r.status);
+    const text = await r.text();
+    if (!text || text.length < 20) throw new Error('empty or too-short response');
+
+    // Derive a slug from the last path segment or frontmatter title.
+    let slug = '';
+    const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
+    if (fm) {
+      const titleMatch = fm[1].match(/^\s*title\s*:\s*(.+)$/im);
+      if (titleMatch) {
+        slug = titleMatch[1].trim().replace(/^["']|["']$/g, '').toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+      }
+    }
+    if (!slug) {
+      const segs = parsed.pathname.split('/').filter(Boolean);
+      const last = segs[segs.length - 1] || 'skill';
+      slug = last.replace(/\.[^.]+$/, '').toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'skill';
+    }
+
+    const dir = path.join(this.opts.localDir, slug);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8');
+    log.info('skills.imported', { url, fetchUrl, slug, bytes: text.length });
+
+    // Reload to include the new skill.
+    await this.load(true);
+
+    const found = this.skills.find((sk) => sk.id === 'local-' + slug);
+    if (!found) throw new Error('imported but not parseable — check frontmatter');
+    return found;
+  }
 }
