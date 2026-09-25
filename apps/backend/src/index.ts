@@ -48,6 +48,9 @@ import { DeepSeekService } from '../../../packages/core/src/deepseek/api/DeepSee
 import { CredentialsFileShape } from '../../../packages/core/src/deepseek/models/DeepSeekTypes';
 import { UEB, registerTermuxHandler, registerChatHandler, registerChatPersistHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerWorkspaceHandler, registerMissionHandler, registerResultHandlers } from '../../../packages/core/src/events';
 import { ChatService } from '../../../packages/core/src/chat/api/ChatService';
+import { ProjectFileStorage } from '../../../packages/core/src/projects/builder/ProjectFileStorage';
+import { ProjectBuilder } from '../../../packages/core/src/projects/builder/ProjectBuilder';
+import { SkillLoader } from '../../../packages/core/src/skills/SkillLoader';
 import { JsonChatRepository } from '../../../packages/core/src/chat/storage/JsonChatRepository';
 
 async function main(): Promise<void> {
@@ -98,6 +101,7 @@ async function main(): Promise<void> {
   // Chat history service (persists to ~/sovereign-core-data/chat/sessions.json)
   const chat = new ChatService(new JsonChatRepository(config.CHAT_FILE));
 
+  // Project builder: writes generated files to ~/sovereign-projects/
 
   // ─── DeepSeek bridge ─────────────────────────────────────────────────
   const deepseekCreds = new InMemoryCredentialStore();
@@ -109,6 +113,19 @@ async function main(): Promise<void> {
     requestTimeoutMs: config.DEEPSEEK.requestTimeoutMs,
     pathTokenTtlSafetyMs: config.DEEPSEEK.pathTokenTtlSafetyMs,
   });
+
+  // Project builder — writes generated files to ~/sovereign-projects/
+  const projectStorage = new ProjectFileStorage(config.PROJECTS_DIR);
+  const skillLoader = new SkillLoader({
+    repos: config.SKILLS_REPOS,
+    branch: config.SKILLS_BRANCH,
+    token: config.SKILLS_TOKEN,
+    cacheFile: config.SKILLS_CACHE_FILE,
+    cacheTtlMs: config.SKILLS_CACHE_TTL_MS,
+    maxTotalBytes: config.SKILLS_MAX_BYTES,
+    localDir: config.SKILLS_LOCAL_DIR,
+  });
+  const projectBuilder = new ProjectBuilder(deepseek, projectStorage, skillLoader);
 
   // Boot-time credential loading (file takes precedence over env vars).
   if (config.DEEPSEEK.credentialsFile && existsSync(config.DEEPSEEK.credentialsFile)) {
@@ -179,6 +196,9 @@ async function main(): Promise<void> {
     ide,
     deepseek,
     chat,
+    projectBuilder,
+    projectStorage,
+    skillLoader,
   });
   await bridgeServer.start();
 

@@ -6,6 +6,7 @@ import { log } from '../../shared/logger';
 interface ChatTurnPayload {
   prompt?: string;
   content?: string;
+  sessionId?: string;
   correlation_id?: string;
   target_path?: string;
 }
@@ -17,7 +18,7 @@ export function registerChatPersistHandler(chat: ChatService): void {
     const p = event.payload;
     if (!p || typeof p.prompt !== 'string' || p.prompt.length === 0) return;
     try {
-      await chat.appendMessage(DEFAULT_SESSION, 'user', p.prompt);
+      await chat.appendMessage(p.sessionId || DEFAULT_SESSION, 'user', p.prompt);
       log.info('chat.persist.user', {
         correlation_id: event.correlation_id,
         length: p.prompt.length,
@@ -33,7 +34,7 @@ export function registerChatPersistHandler(chat: ChatService): void {
     const p = event.payload;
     if (!p || typeof p.content !== 'string' || p.content.length === 0) return;
     try {
-      await chat.appendMessage(DEFAULT_SESSION, 'assistant', p.content);
+      await chat.appendMessage(p.sessionId || DEFAULT_SESSION, 'assistant', p.content);
       log.info('chat.persist.assistant', {
         correlation_id: event.correlation_id,
         length: p.content.length,

@@ -130,7 +130,7 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
 
   router.post('/chat', async (req: Request, res: Response) => {
     try {
-      const { prompt, messages, ...options } = req.body ?? {};
+      const { prompt, messages, sessionId: bodySessionId, ...options } = req.body ?? {};
       const input = Array.isArray(messages) ? messages : prompt;
       if (!input) {
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
@@ -152,7 +152,7 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
           event_type: EVENTS.CHAT_USER_MESSAGE,
           source: 'CHAT',
           timestamp: Date.now(),
-          payload: { prompt: promptText },
+          payload: { prompt: promptText, sessionId: bodySessionId || 'default' },
         });
       }
       if (assistantText) {
@@ -160,7 +160,7 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
           event_type: EVENTS.CHAT_ASSISTANT_MESSAGE,
           source: 'CHAT',
           timestamp: Date.now(),
-          payload: { content: assistantText },
+          payload: { content: assistantText, sessionId: bodySessionId || 'default' },
         });
       }
 

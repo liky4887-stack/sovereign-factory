@@ -36,6 +36,11 @@ import { createEventsRouter } from '../events/http/EventsRouter';
 import { ChatService } from '../chat/api/ChatService';
 import { createChatRouter } from '../chat/http/ChatRouter';
 import { createAuthDebugRouter } from '../debug/http/AuthDebugRouter';
+import { ProjectBuilder } from '../projects/builder/ProjectBuilder';
+import { ProjectFileStorage } from '../projects/builder/ProjectFileStorage';
+import { createProjectBuildRouter } from '../projects/preview/ProjectBuildRouter';
+import { SkillLoader } from '../skills/SkillLoader';
+import { createSkillsRouter } from '../skills/http/SkillsRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -51,6 +56,9 @@ export interface TermuxBridgeServerOptions {
   ide: IdeService;
   deepseek: DeepSeekService;
   chat: ChatService;
+  projectBuilder: ProjectBuilder;
+  projectStorage: ProjectFileStorage;
+  skillLoader: SkillLoader;
 }
 
 export class TermuxBridgeServer {
@@ -68,6 +76,9 @@ export class TermuxBridgeServer {
   private ide: IdeService;
   private deepseek: DeepSeekService;
   private chat: ChatService;
+  private projectBuilder: ProjectBuilder;
+  private projectStorage: ProjectFileStorage;
+  private skillLoader: SkillLoader;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -82,6 +93,9 @@ export class TermuxBridgeServer {
     this.ide = opts.ide;
     this.deepseek = opts.deepseek;
     this.chat = opts.chat;
+    this.projectBuilder = opts.projectBuilder;
+    this.projectStorage = opts.projectStorage;
+    this.skillLoader = opts.skillLoader;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use('/bridge', express.raw({ type: '*/*', limit: '20mb' }));
@@ -111,6 +125,12 @@ export class TermuxBridgeServer {
     this.app.use('/events', createEventsRouter());
     this.app.use('/chat', createChatRouter(this.chat));
     this.app.use('/debug', createAuthDebugRouter());
+    this.app.use('/skills', createSkillsRouter(this.skillLoader));
+    this.app.use('/projects', createProjectBuildRouter({
+      builder: this.projectBuilder,
+      storage: this.projectStorage,
+      publicBaseUrl: config.PUBLIC_BASE_URL,
+    }));
     this.app.use(bridgeProxyRouter);
 
     this.app.use(errorHandler);
