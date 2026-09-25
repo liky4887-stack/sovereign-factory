@@ -74,3 +74,9 @@ The Chat tab in the frontend exposes an orchestrator shell:
 Free-form text routes to DeepSeek unchanged. Every slash command flows through
 the Universal Event Bus and is visible in the Events panel with a shared
 correlation ID.
+
+Additional chat command:
+
+- `/mission <goal>` - produces a ledger-backed multi-step plan via
+  Mystic Realm and emits one SOVEREIGN.MISSION_STEP per plan step
+  plus a SOVEREIGN.MISSION_COMPLETE report.
