@@ -57,6 +57,46 @@ const RULES: RouteRule[] = [
     },
   },
   {
+    name: 'workspace.ls',
+    pattern: /^(?:\/ls|!ls)(?:\s+(.+))?$/i,
+    build: (m, ctx) => {
+      const target = (m[1] || '').trim();
+      return {
+        event_type: EVENTS.WORKSPACE_LIST_DIR,
+        source: 'CHAT',
+        payload: { op: 'list', path: target, correlation_id: ctx.correlation_id },
+        receipt: 'listing: ' + (target || '(default)') + ' (corr ' + ctx.correlation_id + ')',
+      };
+    },
+  },
+  {
+    name: 'workspace.read',
+    pattern: /^(?:\/read|!read)\s+(.+)$/i,
+    build: (m, ctx) => {
+      const target = m[1].trim();
+      return {
+        event_type: EVENTS.WORKSPACE_FILE_READ,
+        source: 'CHAT',
+        payload: { op: 'read', path: target, correlation_id: ctx.correlation_id },
+        receipt: 'reading: ' + target + ' (corr ' + ctx.correlation_id + ')',
+      };
+    },
+  },
+  {
+    name: 'workspace.write',
+    pattern: /^(?:\/write|!write)\s+(\S+)\s+([\s\S]+)$/i,
+    build: (m, ctx) => {
+      const target = m[1].trim();
+      const content = m[2];
+      return {
+        event_type: EVENTS.WORKSPACE_WRITE_FILE,
+        source: 'CHAT',
+        payload: { op: 'write', path: target, content, correlation_id: ctx.correlation_id },
+        receipt: 'writing ' + content.length + ' bytes to ' + target + ' (corr ' + ctx.correlation_id + ')',
+      };
+    },
+  },
+  {
     name: 'help',
     pattern: /^(?:\/help|!help)$/i,
     build: (_m, ctx) => ({

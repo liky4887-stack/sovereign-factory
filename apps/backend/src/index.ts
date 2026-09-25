@@ -46,7 +46,7 @@ import { InMemoryCredentialStore } from '../../../packages/core/src/deepseek/sto
 import { PowSolver } from '../../../packages/core/src/deepseek/pow/PowSolver';
 import { DeepSeekService } from '../../../packages/core/src/deepseek/api/DeepSeekService';
 import { CredentialsFileShape } from '../../../packages/core/src/deepseek/models/DeepSeekTypes';
-import { UEB, registerTermuxHandler, registerChatHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerResultHandlers } from '../../../packages/core/src/events';
+import { UEB, registerTermuxHandler, registerChatHandler, registerChatIntentRouter, registerMysticHandler, registerGodModeHandler, registerWorkspaceHandler, registerResultHandlers } from '../../../packages/core/src/events';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -153,8 +153,9 @@ async function main(): Promise<void> {
   registerChatIntentRouter();
   registerMysticHandler(mysticRealm);
   registerGodModeHandler(godMode);
+  registerWorkspaceHandler();
   registerResultHandlers();
-  log.info('ueb.boot.ready', { handlers: ['termuxHandler', 'chatHandler', 'chatIntentRouter', 'mysticHandler', 'godmodeHandler', 'resultHandlers'] });
+  log.info('ueb.boot.ready', { handlers: ['termuxHandler', 'chatHandler', 'chatIntentRouter', 'mysticHandler', 'godmodeHandler', 'workspaceHandler', 'resultHandlers'] });
 
   // Bridge (8790)
   const bridgeServer = new TermuxBridgeServer({

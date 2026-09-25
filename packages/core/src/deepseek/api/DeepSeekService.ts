@@ -276,7 +276,13 @@ export class DeepSeekService {
     // If /run matched, register the waiter BEFORE emitting so we don't
     // race the termuxHandler's async resolution.
     let commandPromise: Promise<any> | null = null;
-    if (route && route.ruleName === 'termux.run') {
+    const isTermuxRoute = route && route.ruleName === 'termux.run';
+    const isWorkspaceRoute = route && (
+      route.ruleName === 'workspace.ls' ||
+      route.ruleName === 'workspace.read' ||
+      route.ruleName === 'workspace.write'
+    );
+    if (route && (isTermuxRoute || isWorkspaceRoute)) {
       commandPromise = pendingResults.wait(correlation_id, 35000);
     }
 
@@ -293,7 +299,7 @@ export class DeepSeekService {
 
     // Slash command routing.
     if (route) {
-      if (route.ruleName === 'termux.run' && commandPromise) {
+      if (isTermuxRoute && commandPromise) {
         try {
           const cmdResult: any = await commandPromise;
           const parts: string[] = [];
@@ -305,22 +311,47 @@ export class DeepSeekService {
           return {
             code: 0,
             msg: '',
-            data: {
-              content: parts.join('\n'),
-              chat_session_id: null,
-              message_id: null,
-            },
+            data: { content: parts.join('\n'), chat_session_id: null, message_id: null },
           };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return {
             code: 0,
             msg: '',
-            data: {
-              content: 'run failed: ' + msg,
-              chat_session_id: null,
-              message_id: null,
-            },
+            data: { content: 'run failed: ' + msg, chat_session_id: null, message_id: null },
+          };
+        }
+      }
+
+      if (isWorkspaceRoute && commandPromise) {
+        try {
+          const ws: any = await commandPromise;
+          let text = '';
+          if (!ws || ws.ok === false) {
+            text = 'workspace error: ' + (ws && ws.error ? ws.error : 'unknown');
+          } else if (ws.op === 'list') {
+            const lines = (ws.entries || []).map((e: any) =>
+              e.type.padEnd(5) + '  ' + String(e.size).padStart(8) + '  ' + e.name
+            );
+            text = (ws.path || '') + '\n' + lines.join('\n');
+          } else if (ws.op === 'read') {
+            text = (ws.path || '') + ' (' + (ws.size ?? 0) + ' bytes)\n---\n' + (ws.content ?? '');
+          } else if (ws.op === 'write') {
+            text = 'wrote ' + (ws.bytesWritten ?? 0) + ' bytes to ' + (ws.path || '');
+          } else {
+            text = JSON.stringify(ws);
+          }
+          return {
+            code: 0,
+            msg: '',
+            data: { content: text, chat_session_id: null, message_id: null },
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            code: 0,
+            msg: '',
+            data: { content: 'workspace failed: ' + msg, chat_session_id: null, message_id: null },
           };
         }
       }

@@ -7,5 +7,6 @@ export { registerChatIntentRouter, peekRoute } from './handlers/chatIntentRouter
 export type { RoutePeek } from './handlers/chatIntentRouter';
 export { registerMysticHandler } from './handlers/mysticHandler';
 export { registerGodModeHandler } from './handlers/godmodeHandler';
+export { registerWorkspaceHandler } from './handlers/workspaceHandler';
 export { registerResultHandlers } from './handlers/resultHandlers';
 export { createEventsRouter } from './http/EventsRouter';
