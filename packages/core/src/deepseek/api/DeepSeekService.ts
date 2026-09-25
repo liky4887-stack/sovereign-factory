@@ -282,7 +282,8 @@ export class DeepSeekService {
       route.ruleName === 'workspace.read' ||
       route.ruleName === 'workspace.write'
     );
-    if (route && (isTermuxRoute || isWorkspaceRoute)) {
+    const isMissionRoute = route && route.ruleName === 'sovereign.mission';
+    if (route && (isTermuxRoute || isWorkspaceRoute || isMissionRoute)) {
       commandPromise = pendingResults.wait(correlation_id, 35000);
     }
 
@@ -355,6 +356,52 @@ export class DeepSeekService {
           };
         }
       }
+      if (isMissionRoute && commandPromise) {
+        try {
+          const mr: any = await commandPromise;
+          if (!mr || mr.ok === false) {
+            return {
+              code: 0,
+              msg: '',
+              data: {
+                content: 'mission failed: ' + (mr && mr.error ? mr.error : 'unknown'),
+                chat_session_id: null,
+                message_id: null,
+              },
+            };
+          }
+          const r = mr.report;
+          const lines: string[] = [];
+          lines.push('mission ' + r.id + ' — "' + r.intention.slice(0, 60) + '"');
+          lines.push('ledger: ' + r.ledgerEntryId);
+          lines.push('dispatched ' + r.dispatched + ' step(s):');
+          (r.steps || []).forEach((st: any) => {
+            lines.push('  ' + st.order + '. ' + st.action);
+            lines.push('     └ ' + st.rationale);
+          });
+          return {
+            code: 0,
+            msg: '',
+            data: {
+              content: lines.join('\n'),
+              chat_session_id: null,
+              message_id: null,
+            },
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            code: 0,
+            msg: '',
+            data: {
+              content: 'mission failed: ' + msg,
+              chat_session_id: null,
+              message_id: null,
+            },
+          };
+        }
+      }
+
       return {
         code: 0,
         msg: '',

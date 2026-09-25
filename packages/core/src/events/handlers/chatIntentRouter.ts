@@ -97,6 +97,19 @@ const RULES: RouteRule[] = [
     },
   },
   {
+    name: 'sovereign.mission',
+    pattern: /^(?:\/mission|!mission)\s+([\s\S]+)$/i,
+    build: (m, ctx) => {
+      const goal = m[1].trim();
+      return {
+        event_type: EVENTS.SOVEREIGN_MISSION_DEFINE,
+        source: 'CHAT',
+        payload: { goal, correlation_id: ctx.correlation_id },
+        receipt: 'mission queued: "' + goal.slice(0, 60) + '" (corr ' + ctx.correlation_id + ')',
+      };
+    },
+  },
+  {
     name: 'help',
     pattern: /^(?:\/help|!help)$/i,
     build: (_m, ctx) => ({
