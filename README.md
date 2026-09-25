@@ -42,3 +42,35 @@ One-shot script: `~/start-factory.sh`
 - `POST /executeCommand`            — run an allowlisted shell command
 - `POST /file/read|write|list`      — file operations
 - `GET  /ledger/query`              — read the hash-chained audit trail
+
+## Operational scripts (Termux)
+
+These live in `~/` (outside the repo) and manage the runtime:
+
+| Script | Purpose |
+|---|---|
+| `~/start-factory.sh` | Detached backend launcher; loads credentials from `~/cookies/deepseek-creds.json` |
+| `~/stop-factory.sh` | Clean backend stop |
+| `~/watchdog.sh` | 60 s health poll; auto-restarts backend on failure with exponential backoff |
+| `~/start-watchdog.sh` | Detached watchdog launcher |
+| `~/stop-watchdog.sh` | Clean watchdog stop |
+| `~/rotate-logs.sh` | Truncates backend.log / watchdog.log when > 5 MB |
+| `~/start-rotator.sh` | Runs rotate-logs every 15 min |
+| `~/stop-rotator.sh` | Clean rotator stop |
+| `~/.termux/boot/00-sovereign.sh` | Termux:Boot hook - starts backend, watchdog, rotator 15 s after device boot (requires Termux:Boot app from F-Droid) |
+
+## Chat slash commands
+
+The Chat tab in the frontend exposes an orchestrator shell:
+
+- `/run <cmd> [args]` - execute allowlisted commands via `CommandRunner`
+- `/ls [path]` - list a directory inside the allowlist
+- `/read <path>` - read a file (5 MB cap)
+- `/write <path> <content>` - write a file (mode 0600)
+- `/manifest <intent>` - run `MysticRealmService.manifest()`
+- `/storm <target> [ms]` - run `GodModeService.runChaos()`
+- `/help` - command list
+
+Free-form text routes to DeepSeek unchanged. Every slash command flows through
+the Universal Event Bus and is visible in the Events panel with a shared
+correlation ID.
