@@ -29,7 +29,9 @@ export class SkillLoader {
   constructor(private readonly opts: SkillLoaderOptions) {}
 
   isConfigured(): boolean {
-    return Array.isArray(this.opts.repos) && this.opts.repos.length > 0;
+    const hasRepos = Array.isArray(this.opts.repos) && this.opts.repos.length > 0;
+    const hasLocal = !!this.opts.localDir && this.opts.localDir.length > 0;
+    return hasRepos || hasLocal;
   }
 
   getCached(): Skill[] { return this.skills; }
@@ -284,7 +286,7 @@ export class SkillLoader {
     let slug = '';
     const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
     if (fm) {
-      const titleMatch = fm[1].match(/^\s*title\s*:\s*(.+)$/im);
+      const titleMatch = fm[1].match(/^\s*(?:title|name)\s*:\s*(.+)$/im);
       if (titleMatch) {
         slug = titleMatch[1].trim().replace(/^["']|["']$/g, '').toLowerCase()
           .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
