@@ -1,5 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { DeepSeekService } from '../../deepseek/api/DeepSeekService';
 import { ProjectFileStorage, StoredFile } from './ProjectFileStorage';
 import { SkillLoader, Skill } from '../../skills/SkillLoader';
@@ -54,6 +55,35 @@ const RETRY_REMINDER = [
   'EXACTLY one JSON object now. Start your entire message with { and end with }.',
   'No other text.',
 ].join('\n');
+
+// ─── SOVEREIGN FACTORY IDENTITY LAYER ─────────────────────────────
+// The Sovereign Factory DNA is prepended to every build prompt.
+// It shapes HOW the model approaches the task; the OUTPUT CONTRACT
+// below forbids any identity language from appearing in the response.
+// This separator is what makes the mode-shift explicit to the model.
+const SOVEREIGN_OUTPUT_CONTRACT = [
+  '',
+  '=== END IDENTITY LAYER ===',
+  '=== OUTPUT MODE BEGINS ===',
+  '',
+  'The identity layer above shapes HOW you approach this task:',
+  'decisive, zero-friction, subtractive, clean. It does NOT shape',
+  'WHAT you emit.',
+  '',
+  'HARD PROHIBITIONS:',
+  '- Your response is code and structured data ONLY.',
+  '- Do NOT write affirmations, mantras, or identity scripts.',
+  '- Do NOT echo the words "sovereign", "void forge", "chaos engine",',
+  '  "omega switch", "launch swarm", "soul scientist", "sentinels",',
+  '  or "god mode" unless they are legitimate code identifiers a user',
+  '  explicitly asked for.',
+  '- Do NOT add personality, philosophy, or commentary to your response.',
+  '- Do NOT mention that you are following an identity or a prompt.',
+  '',
+  'Follow the FORMAT RULES below exactly.',
+  '',
+].join('\n');
+
 
 /**
  * Escape raw control characters that appear inside JSON string values.
@@ -179,11 +209,42 @@ export interface BuildAttachments {
 }
 
 export class ProjectBuilder {
+  private sovereignPrompt: string | null = null;
+
   constructor(
     private readonly deepseek: DeepSeekService,
     private readonly storage: ProjectFileStorage,
     private readonly skills?: SkillLoader,
-  ) {}
+  ) {
+    this.loadSovereignPrompt();
+  }
+
+  private loadSovereignPrompt(): void {
+    const candidates = [
+      process.env.SOVEREIGN_PROMPT_FILE,
+      path.join(os.homedir(), 'sovereign-factory', 'prompts', 'sovereign-factory.md'),
+    ].filter((x): x is string => typeof x === 'string' && x.length > 0);
+
+    for (const p of candidates) {
+      try {
+        if (!fs.existsSync(p)) continue;
+        const raw = fs.readFileSync(p, 'utf8').trim();
+        if (raw.length === 0) continue;
+        this.sovereignPrompt = raw;
+        log.info('project.build.sovereign_loaded', { path: p, chars: raw.length });
+        return;
+      } catch (e) {
+        log.warn('project.build.sovereign_load_failed', {
+          path: p,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+    log.warn('project.build.sovereign_missing', {
+      tried: candidates,
+      note: 'builds will run without the Sovereign Factory identity layer',
+    });
+  }
 
   private async ask(
     headerText: string,
@@ -192,7 +253,10 @@ export class ProjectBuilder {
     tailText: string,
     temperature?: number,
   ): Promise<string> {
-    const composed = headerText + '\n' + contextBlock + '\nUSER REQUEST:\n' + prompt + '\n' + tailText;
+    const identityBlock = this.sovereignPrompt
+      ? this.sovereignPrompt + '\n' + SOVEREIGN_OUTPUT_CONTRACT + '\n'
+      : '';
+    const composed = identityBlock + headerText + '\n' + contextBlock + '\nUSER REQUEST:\n' + prompt + '\n' + tailText;
     const opts: any = {
       thinkingEnabled: false,
       searchEnabled: false,

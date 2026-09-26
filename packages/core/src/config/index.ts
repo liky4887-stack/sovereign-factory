@@ -74,6 +74,9 @@ export const config = Object.freeze({
     credentialsFile: env('GITHUB_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'github-creds.json')),
     defaultVisibility: env('GITHUB_DEFAULT_VISIBILITY', 'public') as 'public' | 'private',
   },
+  SOVEREIGN: {
+    promptFile: env('SOVEREIGN_PROMPT_FILE', path.join(HOME, 'sovereign-factory', 'prompts', 'sovereign-factory.md')),
+  },
 });
 
 export type Config = typeof config;
