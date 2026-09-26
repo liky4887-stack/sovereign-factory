@@ -41,6 +41,8 @@ import { ProjectFileStorage } from '../projects/builder/ProjectFileStorage';
 import { createProjectBuildRouter } from '../projects/preview/ProjectBuildRouter';
 import { SkillLoader } from '../skills/SkillLoader';
 import { createSkillsRouter } from '../skills/http/SkillsRouter';
+import { GitHubService } from '../github/api/GitHubService';
+import { createGitHubRouter } from '../github/http/GitHubRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -59,6 +61,7 @@ export interface TermuxBridgeServerOptions {
   projectBuilder: ProjectBuilder;
   projectStorage: ProjectFileStorage;
   skillLoader: SkillLoader;
+  github: GitHubService;
 }
 
 export class TermuxBridgeServer {
@@ -79,6 +82,7 @@ export class TermuxBridgeServer {
   private projectBuilder: ProjectBuilder;
   private projectStorage: ProjectFileStorage;
   private skillLoader: SkillLoader;
+  private github: GitHubService;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -96,6 +100,7 @@ export class TermuxBridgeServer {
     this.projectBuilder = opts.projectBuilder;
     this.projectStorage = opts.projectStorage;
     this.skillLoader = opts.skillLoader;
+    this.github = opts.github;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use('/bridge', express.raw({ type: '*/*', limit: '20mb' }));
@@ -126,6 +131,11 @@ export class TermuxBridgeServer {
     this.app.use('/chat', createChatRouter(this.chat));
     this.app.use('/debug', createAuthDebugRouter());
     this.app.use('/skills', createSkillsRouter(this.skillLoader));
+    this.app.use(createGitHubRouter({
+      github: this.github,
+      storage: this.projectStorage,
+      projects: this.projects,
+    }));
     this.app.use('/projects', createProjectBuildRouter({
       builder: this.projectBuilder,
       storage: this.projectStorage,

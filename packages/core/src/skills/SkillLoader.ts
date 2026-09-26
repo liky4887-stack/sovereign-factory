@@ -47,6 +47,16 @@ export class SkillLoader {
     return this.loading;
   }
 
+  /**
+   * Detect a bare GitHub repo URL like https://github.com/owner/name
+   * Returns null for URLs with /blob/ or /tree/ paths, or non-GitHub hosts.
+   */
+  private detectBareRepo(url: string): { owner: string; name: string } | null {
+    const m = url.match(/^https?:\/\/github\.com\/([^\/\s#?]+)\/([^\/\s#?]+?)(?:\.git)?\/?$/i);
+    if (!m) return null;
+    return { owner: m[1], name: m[2] };
+  }
+
   private parseRepo(input: string): { owner: string; name: string } | null {
     const t = input.trim().replace(/\.git$/, '').replace(/\/+$/, '');
     if (/^[^/\s]+\/[^/\s]+$/.test(t)) {
@@ -261,16 +271,22 @@ export class SkillLoader {
    * Fetch a markdown skill from a public URL, save it to
    * <localDir>/<slug>/SKILL.md, and reload. Returns the new skill.
    */
-  async importFromUrl(url: string): Promise<Skill> {
+  async importFromUrl(url: string): Promise<Skill[]> {
     if (!this.opts.localDir) throw new Error('SKILLS_LOCAL_DIR not configured');
 
     let parsed: URL;
     try { parsed = new URL(url); } catch { throw new Error('invalid URL'); }
     if (!/^https?:$/.test(parsed.protocol)) throw new Error('only http(s) URLs are allowed');
 
-    // Convert github blob links to raw.
+    // Bare repo URL -> import every skill in the repo.
+    const repo = this.detectBareRepo(url);
+    if (repo) {
+      return this.importRepo(repo.owner, repo.name);
+    }
+
+    // Single file URL - convert github blob -> raw and fetch one file.
     let fetchUrl = url;
-    const gh = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/);
+    const gh = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/blob\/([^\/]+)\/(.+)$/);
     if (gh) {
       fetchUrl = 'https://raw.githubusercontent.com/' + gh[1] + '/' + gh[2] + '/' + gh[3] + '/' + gh[4];
     }
@@ -282,7 +298,6 @@ export class SkillLoader {
     const text = await r.text();
     if (!text || text.length < 20) throw new Error('empty or too-short response');
 
-    // Derive a slug from the last path segment or frontmatter title.
     let slug = '';
     const fm = text.match(/^---\s*\n([\s\S]*?)\n---\s*\n/);
     if (fm) {
@@ -304,11 +319,88 @@ export class SkillLoader {
     fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8');
     log.info('skills.imported', { url, fetchUrl, slug, bytes: text.length });
 
-    // Reload to include the new skill.
     await this.load(true);
 
     const found = this.skills.find((sk) => sk.id === 'local-' + slug);
-    if (!found) throw new Error('imported but not parseable — check frontmatter');
-    return found;
+    if (!found) throw new Error('imported but not parseable - check frontmatter');
+    return [found];
+  }
+
+  private async importRepo(owner: string, name: string): Promise<Skill[]> {
+    const headers: Record<string, string> = {
+      'user-agent': 'sovereign-skills',
+      'accept': 'application/vnd.github+json',
+    };
+    if (this.opts.token) headers['authorization'] = 'token ' + this.opts.token;
+
+    let branch = 'main';
+    try {
+      const metaRes = await fetch('https://api.github.com/repos/' + owner + '/' + name, { headers });
+      if (metaRes.ok) {
+        const meta: any = await metaRes.json();
+        if (meta && typeof meta.default_branch === 'string') branch = meta.default_branch;
+      }
+    } catch {}
+
+    const treeUrl = 'https://api.github.com/repos/' + owner + '/' + name +
+      '/git/trees/' + encodeURIComponent(branch) + '?recursive=1';
+    const treeRes = await fetch(treeUrl, { headers });
+    if (!treeRes.ok) throw new Error('repo tree fetch failed HTTP ' + treeRes.status);
+    const tree: any = await treeRes.json();
+
+    const NOISE = /(^|\/)(changelog|code[_-]?of[_-]?conduct|contributing|license|security|installation|install|publish|store|conventions|authoring|pipeline|skill[_-]?pipeline|claude\.md|gemini|faq|roadmap|acknowledg)/i;
+    const blobs = (tree.tree || []).filter((n: any) =>
+      n.type === 'blob' &&
+      /\.(md|markdown)$/i.test(n.path) &&
+      !n.path.startsWith('.') &&
+      !NOISE.test(n.path)
+    );
+
+    if (blobs.length === 0) throw new Error('no skill markdown found in repo');
+
+    const rawBase = 'https://raw.githubusercontent.com/' + owner + '/' + name + '/' + branch + '/';
+    const writtenSlugs: string[] = [];
+
+    for (const b of blobs) {
+      try {
+        const rr = await fetch(rawBase + b.path);
+        if (!rr.ok) continue;
+        const text = await rr.text();
+        if (!text || text.length < 20) continue;
+
+        const slug = b.path
+          .replace(/\.(md|markdown)$/i, '')
+          .replace(/\/skill$/i, '')
+          .replace(/\/readme$/i, '')
+          .replace(/\/index$/i, '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '')
+          .slice(0, 60) || 'skill';
+
+        const dir = path.join(this.opts.localDir!, slug);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, 'SKILL.md'), text, 'utf8');
+        writtenSlugs.push(slug);
+        log.info('skills.repo.imported', { repo: owner + '/' + name, path: b.path, slug });
+      } catch (e) {
+        log.warn('skills.repo.import_failed', {
+          path: b.path,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    if (writtenSlugs.length === 0) throw new Error('no skills could be written');
+
+    await this.load(true);
+
+    const out: Skill[] = [];
+    for (const s of writtenSlugs) {
+      const found = this.skills.find((sk) => sk.id === 'local-' + s);
+      if (found) out.push(found);
+    }
+    if (out.length === 0) throw new Error('imported ' + writtenSlugs.length + ' files but none parsed');
+    return out;
   }
 }

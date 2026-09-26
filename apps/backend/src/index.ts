@@ -51,6 +51,7 @@ import { ChatService } from '../../../packages/core/src/chat/api/ChatService';
 import { ProjectFileStorage } from '../../../packages/core/src/projects/builder/ProjectFileStorage';
 import { ProjectBuilder } from '../../../packages/core/src/projects/builder/ProjectBuilder';
 import { SkillLoader } from '../../../packages/core/src/skills/SkillLoader';
+import { GitHubService } from '../../../packages/core/src/github/api/GitHubService';
 import { JsonChatRepository } from '../../../packages/core/src/chat/storage/JsonChatRepository';
 
 async function main(): Promise<void> {
@@ -127,6 +128,9 @@ async function main(): Promise<void> {
   });
   const projectBuilder = new ProjectBuilder(deepseek, projectStorage, skillLoader);
 
+  // GitHub publisher — credentials auto-loaded from disk on construct.
+  const github = new GitHubService(config.GITHUB.credentialsFile);
+
   // Boot-time credential loading (file takes precedence over env vars).
   if (config.DEEPSEEK.credentialsFile && existsSync(config.DEEPSEEK.credentialsFile)) {
     try {
@@ -199,6 +203,7 @@ async function main(): Promise<void> {
     projectBuilder,
     projectStorage,
     skillLoader,
+    github,
   });
   await bridgeServer.start();
 

@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { DeepSeekService } from '../../deepseek/api/DeepSeekService';
 import { ProjectFileStorage, StoredFile } from './ProjectFileStorage';
 import { SkillLoader, Skill } from '../../skills/SkillLoader';
@@ -163,6 +165,19 @@ function validateFiles(input: any): ParsedFile[] {
   return out;
 }
 
+export interface BuildImageInput {
+  name: string;
+  dataUrl: string;
+}
+
+export interface BuildAttachments {
+  images?: BuildImageInput[];
+  /** External image URLs to fetch and save to _attachments/ before building. */
+  imageUrls?: string[];
+  figmaUrl?: string;
+  forceSkillIds?: string[];
+}
+
 export class ProjectBuilder {
   constructor(
     private readonly deepseek: DeepSeekService,
@@ -195,6 +210,7 @@ export class ProjectBuilder {
     projectId: string,
     prompt: string,
     publicBaseUrl: string,
+    attachments: BuildAttachments = {},
   ): Promise<BuildResult> {
     log.info('project.build.start', { projectId, prompt_preview: prompt.slice(0, 80) });
 
@@ -236,9 +252,90 @@ export class ProjectBuilder {
       ].join('\n');
     }
 
+    // Save attached images to <projectDir>/_attachments/. Two sources:
+    //   1. images[]     - base64 data URLs from the client
+    //   2. imageUrls[]  - external http(s) URLs we fetch server-side
+    let attachmentNote = '';
+    const savedImageNames: string[] = [];
+
+    if (attachments.images && attachments.images.length > 0) {
+      const dir = path.join(this.storage.projectDir(projectId), '_attachments');
+      fs.mkdirSync(dir, { recursive: true });
+      for (const img of attachments.images) {
+        const m = img.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        if (!m) continue;
+        const safe = img.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        try {
+          fs.writeFileSync(path.join(dir, safe), Buffer.from(m[2], 'base64'));
+          savedImageNames.push(safe);
+        } catch {}
+      }
+    }
+
+    if (attachments.imageUrls && attachments.imageUrls.length > 0) {
+      const dir = path.join(this.storage.projectDir(projectId), '_attachments');
+      fs.mkdirSync(dir, { recursive: true });
+      for (const url of attachments.imageUrls) {
+        try {
+          const fetched = await fetch(url, { signal: AbortSignal.timeout(20000) });
+          if (!fetched.ok) {
+            log.warn('project.build.image_url_http', { url, status: fetched.status });
+            continue;
+          }
+          const ct = (fetched.headers.get('content-type') || '').toLowerCase();
+          if (!ct.startsWith('image/') && !ct.includes('svg')) {
+            log.warn('project.build.image_url_not_image', { url, contentType: ct });
+            continue;
+          }
+          const buf = Buffer.from(await fetched.arrayBuffer());
+          if (buf.length > 5 * 1024 * 1024) {
+            log.warn('project.build.image_url_too_large', { url, bytes: buf.length });
+            continue;
+          }
+          let fname = '';
+          try {
+            const u = new URL(url);
+            fname = path.basename(u.pathname) || 'image';
+          } catch { fname = 'image'; }
+          if (!/\.[a-z0-9]{2,5}$/i.test(fname)) {
+            const ext = ct.includes('png') ? '.png'
+              : ct.includes('jpeg') || ct.includes('jpg') ? '.jpg'
+              : ct.includes('gif') ? '.gif'
+              : ct.includes('webp') ? '.webp'
+              : ct.includes('svg') ? '.svg'
+              : '.png';
+            fname += ext;
+          }
+          const safe = fname.replace(/[^a-zA-Z0-9._-]/g, '_');
+          fs.writeFileSync(path.join(dir, safe), buf);
+          savedImageNames.push(safe);
+        } catch (e) {
+          log.warn('project.build.image_url_failed', {
+            url,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    }
+
+    if (savedImageNames.length > 0) {
+      attachmentNote += '\n\n=== USER-ATTACHED IMAGES ===\n';
+      attachmentNote += 'These files exist at _attachments/<name> in the project.\n';
+      attachmentNote += 'Reference them with <img src="_attachments/<name>">.\n';
+      attachmentNote += savedImageNames.map((n) => '  \u00B7 _attachments/' + n).join('\n');
+      attachmentNote += '\n=== END USER-ATTACHED IMAGES ===\n';
+    }
+
+    if (attachments.figmaUrl) {
+      attachmentNote += '\n\n=== REFERENCE DESIGN ===\n';
+      attachmentNote += 'Figma: ' + attachments.figmaUrl + '\n';
+      attachmentNote += 'Match the visual language, spacing, and colour system of this design.';
+      attachmentNote += '\n=== END REFERENCE DESIGN ===\n';
+    }
+
     // Load reference skills and inject the most relevant ones.
-    const skillsBlock = await this.buildSkillsBlock(prompt);
-    const enrichedContext = contextBlock + skillsBlock;
+    const skillsBlock = await this.buildSkillsBlock(prompt, attachments.forceSkillIds);
+    const enrichedContext = contextBlock + skillsBlock + attachmentNote;
 
     // ---- First attempt ----
     let raw = await this.ask(HEADER, enrichedContext, prompt, TAIL_REMINDER);
@@ -319,7 +416,7 @@ export class ProjectBuilder {
    * Lists every skill; fully includes the top 3 that match the
    * user's prompt by keyword overlap.
    */
-  private async buildSkillsBlock(prompt: string): Promise<string> {
+  private async buildSkillsBlock(prompt: string, forceSkillIds?: string[]): Promise<string> {
     if (!this.skills || !this.skills.isConfigured()) return '';
     let all: Skill[] = [];
     try { all = await this.skills.load(false); } catch { return ''; }
@@ -341,9 +438,17 @@ export class ProjectBuilder {
 
     // Always include up to 3 skills: keyword matches first, then
     // alphabetical fill so the AI is never skill-less.
-    const matched = scored.filter((x) => x.score > 0);
-    const rest = scored.filter((x) => x.score === 0);
-    const chosen = matched.concat(rest).slice(0, 3);
+    // Skills explicitly attached by the user go first regardless of score.
+    const forced = forceSkillIds && forceSkillIds.length > 0
+      ? scored.filter((x) => forceSkillIds.includes(x.skill.id))
+      : [];
+    // If the user explicitly attached skills, those are the ONLY skills
+    // injected - no auto-fill. Otherwise fall back to keyword top-3.
+    const chosen = forced.length > 0
+      ? forced
+      : scored.filter((x) => x.score > 0)
+          .concat(scored.filter((x) => x.score === 0))
+          .slice(0, 3);
 
     // Cap each skill body so the skills block stays under ~4 KB total.
     const MAX_BODY = 1400;

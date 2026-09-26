@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { ProjectBuilder } from '../builder/ProjectBuilder';
+import { ProjectBuilder, BuildAttachments } from '../builder/ProjectBuilder';
 import { ProjectFileStorage } from '../builder/ProjectFileStorage';
 import { NotFoundError, ValidationError } from '../../shared/types/errors';
 import { log } from '../../shared/logger';
@@ -24,8 +24,29 @@ export function createProjectBuildRouter(opts: ProjectBuildRouterOptions): Route
     if (typeof prompt !== 'string' || prompt.trim().length === 0) {
       throw new ValidationError('prompt is required');
     }
+
+    // Validate and normalize the optional attachments block.
+    const raw = (req.body && req.body.attachments) || {};
+    const attachments: BuildAttachments = {};
+    if (Array.isArray(raw.images)) {
+      attachments.images = raw.images
+        .filter((img: any) => img && typeof img.name === 'string' && typeof img.dataUrl === 'string')
+        .map((img: any) => ({ name: img.name, dataUrl: img.dataUrl }));
+    }
+    if (Array.isArray(raw.imageUrls)) {
+      attachments.imageUrls = raw.imageUrls
+        .filter((u: any) => typeof u === 'string' && /^https?:\/\//i.test(u));
+    }
+    if (typeof raw.figmaUrl === 'string' && raw.figmaUrl.trim()) {
+      attachments.figmaUrl = raw.figmaUrl.trim();
+    }
+    if (Array.isArray(raw.forceSkillIds)) {
+      attachments.forceSkillIds = raw.forceSkillIds
+        .filter((s: any) => typeof s === 'string' && s.length > 0);
+    }
+
     try {
-      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl);
+      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl, attachments);
       res.json({ ok: true, result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

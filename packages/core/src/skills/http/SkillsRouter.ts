@@ -39,16 +39,19 @@ export function createSkillsRouter(loader: SkillLoader): Router {
       return;
     }
     try {
-      const skill = await loader.importFromUrl(url.trim());
+      const imported = await loader.importFromUrl(url.trim());
+      const skills = imported.map((sk) => ({
+        id: sk.id,
+        label: sk.label,
+        description: sk.description,
+        source: sk.source,
+        bytes: sk.content.length,
+      }));
       res.json({
         ok: true,
-        skill: {
-          id: skill.id,
-          label: skill.label,
-          description: skill.description,
-          source: skill.source,
-          bytes: skill.content.length,
-        },
+        count: skills.length,
+        skills,
+        skill: skills[0] || null,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

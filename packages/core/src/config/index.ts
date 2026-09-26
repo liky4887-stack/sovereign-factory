@@ -70,6 +70,10 @@ export const config = Object.freeze({
     envBearerToken: env('DEEPSEEK_BEARER_TOKEN', ''),
     envCookies: env('DEEPSEEK_COOKIES', ''),
   },
+  GITHUB: {
+    credentialsFile: env('GITHUB_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'github-creds.json')),
+    defaultVisibility: env('GITHUB_DEFAULT_VISIBILITY', 'public') as 'public' | 'private',
+  },
 });
 
 export type Config = typeof config;
