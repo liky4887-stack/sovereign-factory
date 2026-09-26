@@ -5,6 +5,7 @@ import { DeepSeekService } from '../api/DeepSeekService';
 import { config } from '../../config';
 import { log } from '../../shared/logger';
 import { UEB, EVENTS } from '../../events';
+import { getChatIdentityBlock, getPlanIdentityBlock } from '../../sovereign/SovereignPrompt';
 import {
   DeepSeekApiError,
   DeepSeekAuthError,
@@ -136,7 +137,33 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
         return;
       }
-      const result = await service.callDeepSeek(input, options);
+      // ─── Sovereign Factory identity layer ─────────────────────
+      // Prepend the DNA prompt to the user input. Mode "plan" gets
+      // the planning contract, everything else gets the chat contract.
+      // Both contracts hard-prohibit identity language in the output.
+      const rawMode = (req.body && req.body.mode) || 'chat';
+      const identityBlock = rawMode === 'plan'
+        ? getPlanIdentityBlock()
+        : getChatIdentityBlock();
+
+      let finalInput: typeof input;
+      if (identityBlock.length === 0) {
+        finalInput = input;
+      } else if (typeof input === 'string') {
+        finalInput = identityBlock + input;
+      } else {
+        // messages array — prepend to the last user message content
+        const arr = [...input];
+        for (let i = arr.length - 1; i >= 0; i--) {
+          if (arr[i] && arr[i].role === 'user') {
+            arr[i] = { ...arr[i], content: identityBlock + arr[i].content };
+            break;
+          }
+        }
+        finalInput = arr;
+      }
+
+      const result = await service.callDeepSeek(finalInput, options);
 
       // Persist both sides of the turn via the event bus.
       const promptText = typeof input === 'string'
