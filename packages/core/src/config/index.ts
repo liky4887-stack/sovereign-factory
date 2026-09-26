@@ -21,7 +21,7 @@ const HOME = os.homedir();
 const DATA_DIR = env('DATA_DIR', path.join(HOME, 'sovereign-core-data'));
 
 export const config = Object.freeze({
-  HOST: env('HOST', '0.0.0.0'),
+  HOST: env('HOST', '127.0.0.1'),
   BRIDGE_PORT: envInt('BRIDGE_PORT', 8790),
   ORCHESTRATOR_PORT: envInt('ORCHESTRATOR_PORT', 8791),
   BRIDGE_TOKEN: env('BRIDGE_TOKEN', ''),
