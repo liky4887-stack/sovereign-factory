@@ -287,6 +287,7 @@ export class DeepSeekService {
     );
     const isMissionRoute = route && route.ruleName === 'sovereign.mission';
     const isLedgerRoute = route && route.ruleName === 'ledger.query';
+    const isEventsRoute = route && route.ruleName === 'events.query';
     if (route && (isTermuxRoute || isWorkspaceRoute || isMissionRoute || isLedgerRoute)) {
       commandPromise = pendingResults.wait(correlation_id, 35000);
     }
@@ -432,6 +433,23 @@ export class DeepSeekService {
             },
           };
         }
+      }
+
+      if (isEventsRoute) {
+        const rp = options.rawPrompt ?? '';
+        const mm = rp.match(/^(?:\/events|!events)(?:\s+(\d+))?$/i);
+        const limit = mm && mm[1] ? Math.max(1, Math.min(200, parseInt(mm[1], 10))) : 20;
+        const evs = UEB.recent(limit);
+        const lines = evs.map((e: any) => {
+          const ts = new Date(e.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+          return ts + '  ' + (e.source || '?') + '  ' + (e.event_type || '?');
+        });
+        const text = 'events - ' + evs.length + ' recent' + (lines.length ? '\n' + lines.join('\n') : '');
+        return {
+          code: 0,
+          msg: '',
+          data: { content: text, chat_session_id: null, message_id: null },
+        };
       }
 
       return {
