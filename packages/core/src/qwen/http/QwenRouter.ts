@@ -16,6 +16,7 @@ import {
   QwenAuthError,
   QwenNoCredentialsError,
 } from '../models/QwenErrors';
+import { QwenWafBlockedError } from '../resilience';
 
 export function createQwenRouter(service: QwenService): Router {
   const router = Router();
@@ -31,6 +32,15 @@ export function createQwenRouter(service: QwenService): Router {
     }
     if (err instanceof QwenApiError) {
       res.status(502).json({ ok: false, error: err.message, code: 'QWEN_API', qwenCode: err.qwenCode });
+      return;
+    }
+    if (err instanceof QwenWafBlockedError) {
+      res.status(503).json({
+        ok: false,
+        error: err.message,
+        code: 'QWEN_WAF_BLOCKED',
+        retryAfterMs: service.getWafState().cooldownRemainingMs,
+      });
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
