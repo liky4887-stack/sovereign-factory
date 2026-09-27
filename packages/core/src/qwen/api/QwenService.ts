@@ -699,10 +699,15 @@ export class QwenService implements LlmEngine {
   // ── Health ───────────────────────────────────────────────────
   async healthCheck(): Promise<LlmHealth> {
     const redacted = this.creds.redacted();
+    const wafState = this.wafBreaker.snapshot();
+    const throttleState = this.throttle.snapshot();
+    const healthy = redacted.configured && redacted.hasAccessToken && this.wafBreaker.isHealthy();
     return {
       engineId: this.id,
       configured: redacted.configured,
-      healthy: redacted.configured && redacted.hasAccessToken,
+      healthy,
+      wafState,
+      throttleState,
       cookiesLength: redacted.cookiesLength,
       hasAccessToken: redacted.hasAccessToken,
       hasRefreshToken: redacted.hasRefreshToken,
