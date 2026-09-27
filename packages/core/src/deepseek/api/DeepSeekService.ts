@@ -286,7 +286,8 @@ export class DeepSeekService {
       route.ruleName === 'workspace.write'
     );
     const isMissionRoute = route && route.ruleName === 'sovereign.mission';
-    if (route && (isTermuxRoute || isWorkspaceRoute || isMissionRoute)) {
+    const isLedgerRoute = route && route.ruleName === 'ledger.query';
+    if (route && (isTermuxRoute || isWorkspaceRoute || isMissionRoute || isLedgerRoute)) {
       commandPromise = pendingResults.wait(correlation_id, 35000);
     }
 
