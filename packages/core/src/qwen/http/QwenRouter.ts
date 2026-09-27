@@ -9,6 +9,7 @@
 //   GET    /qwen/session-tokens      -> { ok, tokens }
 import { Router, Request, Response } from 'express';
 import { QwenService } from '../api/QwenService';
+import { injectIdentity, type InjectMode } from '../../sovereign/IdentityInjector';
 import { log } from '../../shared/logger';
 import {
   QwenApiError,
@@ -80,7 +81,9 @@ export function createQwenRouter(service: QwenService): Router {
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
         return;
       }
-      const result = await service.call(input, options as any);
+      const rawMode = (req.body && req.body.mode) === 'plan' ? 'plan' : 'chat';
+      const finalInput = injectIdentity(input as any, rawMode as InjectMode);
+      const result = await service.call(finalInput as any, options as any);
       res.json({ ok: true, response: result, engineId: service.id });
     } catch (err) {
       sendError(res, err);
@@ -104,7 +107,9 @@ export function createQwenRouter(service: QwenService): Router {
     req.on('close', () => controller.abort());
 
     try {
-      for await (const chunk of service.stream(input, { ...options, signal: controller.signal } as any)) {
+      const rawMode = (req.body && req.body.mode) === 'plan' ? 'plan' : 'chat';
+      const finalInput = injectIdentity(input as any, rawMode as InjectMode);
+      for await (const chunk of service.stream(finalInput as any, { ...options, signal: controller.signal } as any)) {
         res.write(`data: ${JSON.stringify(chunk)}\n\n`);
       }
     } catch (err) {

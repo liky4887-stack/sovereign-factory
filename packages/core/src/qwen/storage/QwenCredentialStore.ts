@@ -20,17 +20,21 @@ export class QwenCredentialStore {
       if (!raw || typeof raw.cookies !== 'string' || raw.cookies.length === 0) return;
       this.creds = {
         cookies: raw.cookies,
-        bearerToken: raw.bearerToken,
-        hifLeim: raw.hifLeim,
-        hifDliq: raw.hifDliq,
-        deviceId: raw.deviceId,
+        accessToken: raw.accessToken,
+        refreshToken: raw.refreshToken,
+        bxUa: raw.bxUa,
+        bxUmidToken: raw.bxUmidToken,
+        bxV: raw.bxV,
+        timezone: raw.timezone,
         extraHeaders: raw.extraHeaders,
         acquiredAt: typeof raw.acquiredAt === 'number' ? raw.acquiredAt : Date.now(),
       };
       log.info('qwen.credentials.loaded_from_file', {
         path: this.filePath,
         cookiesLength: raw.cookies.length,
-        hasBearer: !!raw.bearerToken,
+        hasAccessToken: !!raw.accessToken,
+        hasRefreshToken: !!raw.refreshToken,
+        hasBxUa: !!raw.bxUa,
       });
     } catch (e) {
       log.warn('qwen.credentials.load_failed', {
@@ -46,10 +50,12 @@ export class QwenCredentialStore {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
       const payload: QwenCredentialsFileShape = {
         cookies: this.creds.cookies,
-        bearerToken: this.creds.bearerToken,
-        hifLeim: this.creds.hifLeim,
-        hifDliq: this.creds.hifDliq,
-        deviceId: this.creds.deviceId,
+        accessToken: this.creds.accessToken,
+        refreshToken: this.creds.refreshToken,
+        bxUa: this.creds.bxUa,
+        bxUmidToken: this.creds.bxUmidToken,
+        bxV: this.creds.bxV,
+        timezone: this.creds.timezone,
         extraHeaders: this.creds.extraHeaders,
         acquiredAt: this.creds.acquiredAt,
       };
@@ -65,21 +71,24 @@ export class QwenCredentialStore {
     }
   }
 
-  get(): QwenCredentials | null {
-    return this.creds;
-  }
+  get(): QwenCredentials | null { return this.creds; }
 
   has(): boolean {
-    return this.creds !== null && this.creds.cookies.length > 0;
+    return this.creds !== null
+      && this.creds.cookies.length > 0
+      && typeof this.creds.accessToken === 'string'
+      && this.creds.accessToken.length > 0;
   }
 
-  set(input: Partial<QwenCredentials> & { cookies: string }): QwenCredentials {
+  set(input: Partial<QwenCredentials> & { cookies: string; accessToken: string }): QwenCredentials {
     const next: QwenCredentials = {
       cookies: input.cookies,
-      bearerToken: input.bearerToken,
-      hifLeim: input.hifLeim,
-      hifDliq: input.hifDliq,
-      deviceId: input.deviceId,
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      bxUa: input.bxUa,
+      bxUmidToken: input.bxUmidToken,
+      bxV: input.bxV,
+      timezone: input.timezone,
       extraHeaders: input.extraHeaders,
       acquiredAt: Date.now(),
     };
@@ -87,8 +96,9 @@ export class QwenCredentialStore {
     this.persist();
     log.info('qwen.credentials.set', {
       cookiesLength: next.cookies.length,
-      hasBearer: !!next.bearerToken,
-      extraHeaderCount: next.extraHeaders ? Object.keys(next.extraHeaders).length : 0,
+      accessTokenLength: next.accessToken?.length ?? 0,
+      hasRefreshToken: !!next.refreshToken,
+      hasBxUa: !!next.bxUa,
     });
     return next;
   }
@@ -102,8 +112,11 @@ export class QwenCredentialStore {
   redacted(): {
     configured: boolean;
     cookiesLength: number;
-    hasBearer: boolean;
-    hasExtraHeaders: boolean;
+    hasAccessToken: boolean;
+    hasRefreshToken: boolean;
+    hasBxUa: boolean;
+    hasBxUmidToken: boolean;
+    hasBxV: boolean;
     extraHeaderNames: string[];
     acquiredAt: number | null;
   } {
@@ -111,8 +124,11 @@ export class QwenCredentialStore {
       return {
         configured: false,
         cookiesLength: 0,
-        hasBearer: false,
-        hasExtraHeaders: false,
+        hasAccessToken: false,
+        hasRefreshToken: false,
+        hasBxUa: false,
+        hasBxUmidToken: false,
+        hasBxV: false,
         extraHeaderNames: [],
         acquiredAt: null,
       };
@@ -120,8 +136,11 @@ export class QwenCredentialStore {
     return {
       configured: true,
       cookiesLength: this.creds.cookies.length,
-      hasBearer: !!this.creds.bearerToken,
-      hasExtraHeaders: !!this.creds.extraHeaders,
+      hasAccessToken: !!this.creds.accessToken,
+      hasRefreshToken: !!this.creds.refreshToken,
+      hasBxUa: !!this.creds.bxUa,
+      hasBxUmidToken: !!this.creds.bxUmidToken,
+      hasBxV: !!this.creds.bxV,
       extraHeaderNames: this.creds.extraHeaders ? Object.keys(this.creds.extraHeaders) : [],
       acquiredAt: this.creds.acquiredAt,
     };

@@ -1,29 +1,32 @@
-// Qwen engine types. Mirrors DeepSeekTypes where sensible; extends
-// where Qwen requires different shapes (e.g. OpenAI-compatible body).
+// Qwen engine types. Mirrors DeepSeekTypes where sensible.
+// Auth model (from captured browser traffic):
+//   - accessToken: short-lived JWT (~15 min), sent as `Authorization: Bearer`
+//   - cookies: full jar for WAF/session continuity
+//   - refresh_token cookie: long-lived (~30 days), used to mint access tokens
+//   - bx-ua / bx-umidtoken / bx-v: Alibaba WAF fingerprints (required)
 
 export interface QwenCredentials {
-  cookies: string;                 // full joined cookie string
-  bearerToken?: string;            // optional Authorization bearer
-  hifLeim?: string;                // fingerprint-style header if Qwen has one
-  hifDliq?: string;                // same
-  deviceId?: string;
-  extraHeaders?: Record<string, string>;  // any other static headers Qwen needs
+  cookies: string;
+  accessToken?: string;
+  refreshToken?: string;
+  bxUa?: string;               // Alibaba WAF browser fingerprint (~2KB)
+  bxUmidToken?: string;        // Alibaba UMID device token
+  bxV?: string;                // Alibaba bx SDK version, e.g. "2.5.37"
+  timezone?: string;           // e.g. "Sun Sep 27 2026 02:15:48 GMT+0200"
+  extraHeaders?: Record<string, string>;
   acquiredAt: number;
 }
 
 export interface QwenCredentialsFileShape {
   cookies: string;
-  bearerToken?: string;
-  hifLeim?: string;
-  hifDliq?: string;
-  deviceId?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  bxUa?: string;
+  bxUmidToken?: string;
+  bxV?: string;
+  timezone?: string;
   extraHeaders?: Record<string, string>;
   acquiredAt?: number;
-}
-
-export interface QwenChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
 }
 
 export interface QwenCallOptions {
@@ -34,9 +37,9 @@ export interface QwenCallOptions {
   thinkingEnabled?: boolean;
   searchEnabled?: boolean;
   chatSessionId?: string;
+  parentMessageId?: string | null;
   targetPath?: string;
   signal?: AbortSignal;
-  parentMessageId?: string | null;
   [key: string]: unknown;
 }
 
@@ -57,19 +60,9 @@ export interface QwenPathToken {
 }
 
 export interface QwenServiceOptions {
-  // Base URL of the Qwen web product (chat.qwen.ai or equivalent).
-  // TODO: REPLACE with confirmed base URL from captured request.
-  baseUrl: string;
-
-  // Default target path for chat completions.
-  // TODO: REPLACE with confirmed endpoint from captured request.
-  defaultTargetPath: string;
-
-  // Default model name.
-  defaultModel: string;
-
+  baseUrl: string;             // https://chat.qwen.ai
+  defaultTargetPath: string;   // /api/v2/chat/completions
+  defaultModel: string;        // qwen3.7-plus
   requestTimeoutMs: number;
-
-  // Path where credentials are persisted.
   credentialsFile: string;
 }

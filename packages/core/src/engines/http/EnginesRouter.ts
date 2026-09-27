@@ -7,6 +7,7 @@
 import { Router, Request, Response } from 'express';
 import { EngineRegistry } from '../EngineRegistry';
 import { TwinOrchestrator } from '../TwinOrchestrator';
+import { injectIdentity, type InjectMode } from '../../sovereign/IdentityInjector';
 
 export function createEnginesRouter(
   registry: EngineRegistry,
@@ -57,7 +58,9 @@ export function createEnginesRouter(
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
         return;
       }
-      const result = await orchestrator.callWithPolicy(input, options as any);
+      const rawMode = (req.body && req.body.mode) === 'plan' ? 'plan' : 'chat';
+      const finalInput = injectIdentity(input as any, rawMode as InjectMode);
+      const result = await orchestrator.callWithPolicy(finalInput as any, options as any);
       res.json({ ok: true, twin: result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -95,7 +98,9 @@ export function createEnginesRouter(
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
         return;
       }
-      const result = await engine.call(input as any, options as any);
+      const rawMode = (req.body && req.body.mode) === 'plan' ? 'plan' : 'chat';
+      const finalInput = injectIdentity(input as any, rawMode as InjectMode);
+      const result = await engine.call(finalInput as any, options as any);
       res.json({ ok: true, engineId: engine.id, response: result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
