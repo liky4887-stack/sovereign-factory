@@ -57,6 +57,19 @@ const RULES: RouteRule[] = [
     },
   },
   {
+    name: 'ledger.query',
+    pattern: /^(?:\/ledger|!ledger)(?:\s+(\d+))?$/i,
+    build: (m, ctx) => {
+      const limit = m[1] ? Math.max(1, Math.min(500, parseInt(m[1], 10))) : 20;
+      return {
+        event_type: EVENTS.LEDGER_QUERY,
+        source: 'CHAT',
+        payload: { limit, correlation_id: ctx.correlation_id },
+        receipt: `querying ledger (limit ${limit}) (corr ${ctx.correlation_id})`,
+      };
+    },
+  },
+  {
     name: 'workspace.ls',
     pattern: /^(?:\/ls|!ls)(?:\s+(.+))?$/i,
     build: (m, ctx) => {
