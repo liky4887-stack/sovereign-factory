@@ -131,7 +131,7 @@ export class QwenService implements LlmEngine {
   private lastCallError: string | null = null;
   private refreshingPromise: Promise<string> | null = null;
   private readonly throttle = new QwenThrottle(2, 1);
-  private readonly wafBreaker = new QwenWafBreaker(15 * 60 * 1000);
+  private readonly wafBreaker = new QwenWafBreaker(45 * 60 * 1000);
 
   constructor(
     private readonly creds: QwenCredentialStore,
