@@ -131,10 +131,10 @@ const RULES: RouteRule[] = [
       payload: {
         correlation_id: ctx.correlation_id,
         text:
-          'Commands: /run <cmd> [args] | /manifest <intent> | /storm <target> [duration_ms] | /help',
+          'Commands: /run <cmd> [args] | /manifest <intent> | /storm <target> [duration_ms] | /ls [path] | /read <path> | /write <path> <content> | /mission <goal> | /ledger [limit] | /help',
       },
       receipt:
-        'Commands: /run <cmd> [args] | /manifest <intent> | /storm <target> [duration_ms] | /help',
+        'Commands: /run <cmd> [args] | /manifest <intent> | /storm <target> [duration_ms] | /ls [path] | /read <path> | /write <path> <content> | /mission <goal> | /ledger [limit] | /help',
     }),
   },
 ];
