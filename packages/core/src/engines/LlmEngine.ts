@@ -71,6 +71,9 @@ export interface LlmEngine {
   getCredentialsRedacted(): LlmCredentialsRedacted;
 
   healthCheck(): Promise<LlmHealth>;
+
+  /** Optional: false when the engine is blocked by a circuit breaker. */
+  isHealthy?(): boolean;
 }
 
 export const ENGINE_IDS = {

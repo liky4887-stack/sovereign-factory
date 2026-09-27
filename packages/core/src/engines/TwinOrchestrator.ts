@@ -59,6 +59,16 @@ export class TwinOrchestrator {
       };
     }
 
+    if (typeof engine.isHealthy === 'function' && engine.isHealthy() === false) {
+      return {
+        engineId,
+        engineLabel: engine.label,
+        ok: false,
+        error: 'engine marked unhealthy (circuit breaker open)',
+        latencyMs: 0,
+        at,
+      };
+    }
     if (!engine.hasCredentials()) {
       return {
         engineId,
