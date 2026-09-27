@@ -14,7 +14,7 @@ import {
   DeepSeekAuthError,
   DeepSeekNoCredentialsError,
 } from '../models/DeepSeekErrors';
-import { UEB, EVENTS, peekRoute, pendingResults } from '../../events';
+import { dispatchChatCommand } from '../../engines/CommandRouter';
 
 /**
  * DeepSeek streams JSON-Patch style SSE frames. Three shapes:
@@ -274,192 +274,12 @@ export class DeepSeekService {
     const prompt = this.promptFromInput(input);
 
     const correlation_id = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    const route = peekRoute(options.rawPrompt ?? prompt, correlation_id);
-
-    // If /run matched, register the waiter BEFORE emitting so we don't
-    // race the termuxHandler's async resolution.
-    let commandPromise: Promise<any> | null = null;
-    const isTermuxRoute = route && route.ruleName === 'termux.run';
-    const isWorkspaceRoute = route && (
-      route.ruleName === 'workspace.ls' ||
-      route.ruleName === 'workspace.read' ||
-      route.ruleName === 'workspace.write'
-    );
-    const isMissionRoute = route && route.ruleName === 'sovereign.mission';
-    const isLedgerRoute = route && route.ruleName === 'ledger.query';
-    const isEventsRoute = route && route.ruleName === 'events.query';
-    if (route && (isTermuxRoute || isWorkspaceRoute || isMissionRoute || isLedgerRoute)) {
-      commandPromise = pendingResults.wait(correlation_id, 35000);
-    }
-
-    // Emit CHAT.COMMAND_PARSED and await the full handler chain. If the
-    // route is termux.run, this also runs the command and resolves the
-    // pending promise before we return.
-    await UEB.emit({
-      event_type: EVENTS.CHAT_COMMAND_PARSED,
-      source: 'CHAT',
-      timestamp: Date.now(),
-      correlation_id,
-      payload: { prompt: options.rawPrompt ?? prompt, correlation_id, target_path: targetPath },
-    });
-
-    // Slash command routing.
-    if (route) {
-      if (isTermuxRoute && commandPromise) {
-        try {
-          const cmdResult: any = await commandPromise;
-          const parts: string[] = [];
-          const stdout = String(cmdResult && cmdResult.stdout || '').trimEnd();
-          const stderr = String(cmdResult && cmdResult.stderr || '').trimEnd();
-          if (stdout) parts.push(stdout);
-          if (stderr) parts.push('[stderr]\n' + stderr);
-          parts.push('(exit ' + (cmdResult && cmdResult.exit_code != null ? cmdResult.exit_code : -1) + ')');
-          return {
-            code: 0,
-            msg: '',
-            data: { content: parts.join('\n'), chat_session_id: null, message_id: null },
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            code: 0,
-            msg: '',
-            data: { content: 'run failed: ' + msg, chat_session_id: null, message_id: null },
-          };
-        }
-      }
-
-      if (isLedgerRoute && commandPromise) {
-        try {
-          const lr: any = await commandPromise;
-          if (!lr || lr.ok === false) return { code: 0, msg: '', data: { content: 'ledger error: ' + (lr && lr.error ? lr.error : 'unknown'), chat_session_id: null, message_id: null } };
-          const entries = lr.entries || [];
-          const head = 'ledger - ' + entries.length + ' of ' + (lr.total ?? entries.length) + ' entries';
-          if (entries.length === 0) return { code: 0, msg: '', data: { content: head, chat_session_id: null, message_id: null } };
-          const rows = entries.map((e: any) => {
-            const ts = e.createdAt ? String(e.createdAt).replace('T', ' ').slice(0, 19) : '--';
-            return ts + '  ' + (e.source || '?') + '  ' + (e.type || '?') + '  ' + (e.id || '');
-          });
-          return { code: 0, msg: '', data: { content: head + '\n' + rows.join('\n'), chat_session_id: null, message_id: null } };
-        } catch (err) {
-          const m = err instanceof Error ? err.message : String(err);
-          return { code: 0, msg: '', data: { content: 'ledger failed: ' + m, chat_session_id: null, message_id: null } };
-        }
-      }
-      if (isWorkspaceRoute && commandPromise) {
-        try {
-          const ws: any = await commandPromise;
-          let text = '';
-          if (!ws || ws.ok === false) {
-            text = 'workspace error: ' + (ws && ws.error ? ws.error : 'unknown');
-          } else if (ws.op === 'list') {
-            const lines = (ws.entries || []).map((e: any) =>
-              e.type.padEnd(5) + '  ' + String(e.size).padStart(8) + '  ' + e.name
-            );
-            text = (ws.path || '') + '\n' + lines.join('\n');
-          } else if (ws.op === 'read') {
-            text = (ws.path || '') + ' (' + (ws.size ?? 0) + ' bytes)\n---\n' + (ws.content ?? '');
-          } else if (ws.op === 'write') {
-            text = 'wrote ' + (ws.bytesWritten ?? 0) + ' bytes to ' + (ws.path || '');
-          } else {
-            text = JSON.stringify(ws);
-          }
-          return {
-            code: 0,
-            msg: '',
-            data: { content: text, chat_session_id: null, message_id: null },
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            code: 0,
-            msg: '',
-            data: { content: 'workspace failed: ' + msg, chat_session_id: null, message_id: null },
-          };
-        }
-      }
-      if (isMissionRoute && commandPromise) {
-        try {
-          const mr: any = await commandPromise;
-          if (!mr || mr.ok === false) {
-            return {
-              code: 0,
-              msg: '',
-              data: {
-                content: 'mission failed: ' + (mr && mr.error ? mr.error : 'unknown'),
-                chat_session_id: null,
-                message_id: null,
-              },
-            };
-          }
-          const r = mr.report;
-          const lines: string[] = [];
-          lines.push('mission ' + r.id + ' — "' + r.intention.slice(0, 60) + '"');
-          lines.push('ledger: ' + r.ledgerEntryId);
-          lines.push('dispatched ' + r.dispatched + ' step(s):');
-          (r.steps || []).forEach((st: any) => {
-            lines.push('  ' + st.order + '. ' + st.action);
-            lines.push('     └ ' + st.rationale);
-          });
-          if (r.dispatch && r.dispatch.kind && r.dispatch.kind !== 'audit') {
-            lines.push('');
-            lines.push('dispatched: ' + r.dispatch.kind + ' -> ' + (r.dispatch.event_type || '?'));
-            if (r.dispatch.error) lines.push('  error: ' + r.dispatch.error);
-            else if (r.dispatch.kind === 'write' && r.dispatch.payload && (r.dispatch.payload as any).path) {
-              lines.push('  path: ' + (r.dispatch.payload as any).path);
-            }
-          } else if (r.dispatch) {
-            lines.push('');
-            lines.push('dispatched: (no concrete action - audit only)');
-          }
-          return {
-            code: 0,
-            msg: '',
-            data: {
-              content: lines.join('\n'),
-              chat_session_id: null,
-              message_id: null,
-            },
-          };
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return {
-            code: 0,
-            msg: '',
-            data: {
-              content: 'mission failed: ' + msg,
-              chat_session_id: null,
-              message_id: null,
-            },
-          };
-        }
-      }
-
-      if (isEventsRoute) {
-        const rp = options.rawPrompt ?? '';
-        const mm = rp.match(/^(?:\/events|!events)(?:\s+(\d+))?$/i);
-        const limit = mm && mm[1] ? Math.max(1, Math.min(200, parseInt(mm[1], 10))) : 20;
-        const evs = UEB.recent(limit);
-        const lines = evs.map((e: any) => {
-          const ts = new Date(e.timestamp).toISOString().replace('T', ' ').slice(0, 19);
-          return ts + '  ' + (e.source || '?') + '  ' + (e.event_type || '?');
-        });
-        const text = 'events - ' + evs.length + ' recent' + (lines.length ? '\n' + lines.join('\n') : '');
-        return {
-          code: 0,
-          msg: '',
-          data: { content: text, chat_session_id: null, message_id: null },
-        };
-      }
-
+    const dispatch = await dispatchChatCommand(options.rawPrompt ?? prompt, correlation_id);
+    if (dispatch.matched) {
       return {
         code: 0,
         msg: '',
-        data: {
-          content: route.receipt,
-          chat_session_id: null,
-          message_id: null,
-        },
+        data: { content: dispatch.content || '', chat_session_id: null, message_id: null },
       };
     }
 
