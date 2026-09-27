@@ -299,7 +299,7 @@ export class DeepSeekService {
       source: 'CHAT',
       timestamp: Date.now(),
       correlation_id,
-      payload: { prompt, correlation_id, target_path: targetPath },
+      payload: { prompt: options.rawPrompt ?? prompt, correlation_id, target_path: targetPath },
     });
 
     // Slash command routing.
