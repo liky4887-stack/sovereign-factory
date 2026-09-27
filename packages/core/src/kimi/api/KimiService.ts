@@ -306,11 +306,20 @@ export class KimiService implements LlmEngine {
 
   async healthCheck(): Promise<LlmHealth> {
     const r = this.creds.redacted();
-    const healthy = r.configured && r.hasBearer && this.wafBreaker.isHealthy();
+    const credsPresent = r.configured && r.hasBearer;
+    const lastFailed = this.lastCallOk === false;
+    // 'healthy' must mean 'this engine can serve a request right now'.
+    // Credentials present is necessary but not sufficient — if the last
+    // call failed (Kimi's 401 signature rejection), the engine is not
+    // healthy regardless of what the credential store holds.
+    const healthy = credsPresent && !lastFailed && this.wafBreaker.isHealthy();
     return {
       engineId: this.id,
       configured: r.configured,
       healthy,
+      credsPresent,
+      serverAcceptsCredentials:
+        this.lastCallOk === null ? null : this.lastCallOk === true,
       cookiesLength: r.cookiesLength,
       hasBearer: r.hasBearer,
       hasCsrf: r.hasCsrf,
