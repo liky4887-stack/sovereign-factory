@@ -328,6 +328,23 @@ export class DeepSeekService {
         }
       }
 
+      if (isLedgerRoute && commandPromise) {
+        try {
+          const lr: any = await commandPromise;
+          if (!lr || lr.ok === false) return { code: 0, msg: '', data: { content: 'ledger error: ' + (lr && lr.error ? lr.error : 'unknown'), chat_session_id: null, message_id: null } };
+          const entries = lr.entries || [];
+          const head = 'ledger - ' + entries.length + ' of ' + (lr.total ?? entries.length) + ' entries';
+          if (entries.length === 0) return { code: 0, msg: '', data: { content: head, chat_session_id: null, message_id: null } };
+          const rows = entries.map((e: any) => {
+            const ts = e.createdAt ? String(e.createdAt).replace('T', ' ').slice(0, 19) : '--';
+            return ts + '  ' + (e.source || '?') + '  ' + (e.type || '?') + '  ' + (e.id || '');
+          });
+          return { code: 0, msg: '', data: { content: head + '\n' + rows.join('\n'), chat_session_id: null, message_id: null } };
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          return { code: 0, msg: '', data: { content: 'ledger failed: ' + m, chat_session_id: null, message_id: null } };
+        }
+      }
       if (isWorkspaceRoute && commandPromise) {
         try {
           const ws: any = await commandPromise;
