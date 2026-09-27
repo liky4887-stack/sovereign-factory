@@ -1,16 +1,27 @@
-// Kimi engine — official Moonshot API transport.
-// Replaces the Connect RPC / browser-attestation path (kept in git
-// history at 8565165). The old path required x-msh-shield-data issued
-// by a browser VM; this one uses a standard API key.
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+// Kimi engine — service layer. Implements LlmEngine.
+// Protocol: Connect RPC over HTTP (application/connect+json).
+// Endpoint: POST /apiv2/kimi.gateway.chat.v1.ChatService/Chat
+// Auth: Bearer access token + stable device headers.
+import * as crypto from 'node:crypto';
 import { KimiCredentialStore } from '../storage/KimiCredentialStore';
-import { KimiCallOptions, KimiServiceOptions } from '../models/KimiTypes';
+import {
+  KimiCallOptions,
+  KimiServiceOptions,
+} from '../models/KimiTypes';
 import {
   KimiApiError,
   KimiAuthError,
   KimiNoCredentialsError,
+  KimiExpiredSessionError,
 } from '../models/KimiErrors';
+import { KimiThrottle, KimiWafBreaker, detectKimiWafSignal } from '../resilience';
+import {
+  encodeConnectFrame,
+  decodeConnectFrames,
+  parseEventOp,
+  newStreamState,
+  applyEventOp,
+} from './KimiConnect';
 import { log } from '../../shared/logger';
 import {
   LlmEngine,
@@ -21,20 +32,6 @@ import {
   ENGINE_IDS,
 } from '../../engines/LlmEngine';
 
-const MOONSHOT_BASE = 'https://api.moonshot.cn/v1';
-const DEFAULT_MODEL = 'moonshot-v1-8k';
-const KEY_FILE = path.join(process.env.HOME || '', 'cookies', 'moonshot-api-key.txt');
-
-function loadApiKey(): string | null {
-  const fromEnv = (process.env.MOONSHOT_API_KEY || '').trim();
-  if (fromEnv.startsWith('sk-')) return fromEnv;
-  try {
-    const fromFile = fs.readFileSync(KEY_FILE, 'utf8').trim();
-    if (fromFile.startsWith('sk-')) return fromFile;
-  } catch {}
-  return null;
-}
-
 export class KimiService implements LlmEngine {
   readonly id = ENGINE_IDS.KIMI;
   readonly label = 'Kimi';
@@ -43,57 +40,94 @@ export class KimiService implements LlmEngine {
   private lastCallOk: boolean | null = null;
   private lastCallError: string | null = null;
 
+  private readonly throttle: KimiThrottle;
+  private readonly wafBreaker = new KimiWafBreaker(3 * 60 * 60 * 1000);
+
   constructor(
     private readonly creds: KimiCredentialStore,
     private readonly opts: KimiServiceOptions,
-  ) {}
+  ) {
+    this.throttle = new KimiThrottle(
+      opts.credentialsFile.replace(/\.json$/, '.throttle.json'),
+      opts.minRequestGapSeconds,
+      opts.maxRequestsPerDay,
+    );
+  }
 
+  // ── Credentials ────────────────────────────────────────────
   setCredentials(input: Record<string, unknown>): Record<string, unknown> {
-    const key = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
     const stored = this.creds.set({
       cookies: typeof input.cookies === 'string' ? input.cookies : '',
-      bearerToken: key.startsWith('sk-') ? key : (typeof input.bearerToken === 'string' ? input.bearerToken.trim() : undefined),
+      bearerToken: typeof input.bearerToken === 'string' ? input.bearerToken : undefined,
       csrfToken: typeof input.csrfToken === 'string' ? input.csrfToken : undefined,
       extraHeaders: typeof input.extraHeaders === 'object' && input.extraHeaders !== null
         ? (input.extraHeaders as Record<string, string>)
         : undefined,
     });
-    return { cookiesLength: stored.cookies.length, hasBearer: !!stored.bearerToken, hasCsrf: !!stored.csrfToken };
+    return {
+      cookiesLength: stored.cookies.length,
+      hasBearer: !!stored.bearerToken,
+      hasCsrf: !!stored.csrfToken,
+    };
   }
 
   clearCredentials(): void { this.creds.clear(); }
-
-  hasCredentials(): boolean { return !!loadApiKey(); }
+  hasCredentials(): boolean {
+    const c = this.creds.get();
+    return !!c && c.cookies.length > 0 && !!c.bearerToken;
+  }
 
   getCredentialsRedacted(): LlmCredentialsRedacted {
-    const key = loadApiKey();
     const r = this.creds.redacted();
     return {
-      configured: !!key,
-      hasCookies: false,
-      hasBearer: !!key,
-      hasExtraHeaders: false,
+      configured: r.configured,
+      hasCookies: r.cookiesLength > 0,
+      hasBearer: r.hasBearer,
+      hasExtraHeaders: r.hasCsrf,
       acquiredAt: r.acquiredAt,
     };
   }
 
-  getRawCredentials() {
-    const key = loadApiKey();
-    return { cookies: '', bearerToken: key, csrfToken: null, extraHeaders: null, acquiredAt: this.creds.redacted().acquiredAt };
+  getRawCredentials() { return this.creds.get(); }
+
+  private requireCreds() {
+    const c = this.creds.get();
+    if (!c) throw new KimiNoCredentialsError();
+    return c;
   }
 
-  private requireKey(): string {
-    const key = loadApiKey();
-    if (!key) throw new KimiNoCredentialsError();
-    return key;
-  }
-
+  // ── Headers ────────────────────────────────────────────────
+  // Stable per-device headers. No rotation.
   private buildHeaders(): Record<string, string> {
-    return {
-      'content-type': 'application/json',
-      'accept': 'application/json',
-      'authorization': 'Bearer ' + this.requireKey(),
+    const c = this.requireCreds();
+    const h: Record<string, string> = {
+      'accept': '*/*',
+      'accept-language': 'en-US',
+      'content-type': 'application/connect+json',
+      'connect-protocol-version': '1',
+      'cookie': c.cookies,
+      'origin': this.opts.baseUrl,
+      'referer': this.opts.baseUrl + '/',
+      'priority': 'u=1, i',
+      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Linux"',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      'x-language': 'en-US',
+      'x-msh-platform': 'web',
+      'x-msh-version': '2.3.0',
     };
+    if (c.bearerToken) h['authorization'] = 'Bearer ' + c.bearerToken;
+    if (this.opts.defaultTimezone) h['r-timezone'] = this.opts.defaultTimezone;
+    if (this.opts.defaultDeviceId) h['x-msh-device-id'] = this.opts.defaultDeviceId;
+    if (this.opts.defaultSessionId) h['x-msh-session-id'] = this.opts.defaultSessionId;
+    if (this.opts.defaultTrafficId) h['x-traffic-id'] = this.opts.defaultTrafficId;
+    if (this.opts.defaultShieldData) h['x-msh-shield-data'] = this.opts.defaultShieldData;
+    if (c.extraHeaders) Object.assign(h, c.extraHeaders);
+    return h;
   }
 
   private promptFromInput(input: string | Array<{ role: string; content: string }>): string {
@@ -105,123 +139,184 @@ export class KimiService implements LlmEngine {
     return last ? last.content : input[input.length - 1].content;
   }
 
-  private buildBody(prompt: string, options: KimiCallOptions, stream: boolean) {
-    return {
-      model: options.model || DEFAULT_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: typeof options.temperature === 'number' ? options.temperature : 0.6,
-      stream,
+  // ── Connect request body ───────────────────────────────────
+  private buildConnectBody(prompt: string, options: KimiCallOptions): Buffer {
+    const chatId = options.chatSessionId || crypto.randomUUID();
+    const parentId = options.parentMessageId || crypto.randomUUID();
+    const model = options.model ?? this.opts.defaultModel;
+    const payload = {
+      chat_id: chatId,
+      scenario: 'SCENARIO_CHAT',
+      tools: [
+        { type: 'TOOL_TYPE_SEARCH', search: {} },
+        { type: 'TOOL_TYPE_CRON_JOB' },
+      ],
+      message: {
+        parent_id: parentId,
+        role: 'user',
+        blocks: [{ message_id: '', text: { content: prompt } }],
+        scenario: 'SCENARIO_CHAT',
+        is_goal: false,
+      },
+      options: {
+        thinking: options.thinkingEnabled ?? true,
+        enable_plugin: true,
+        reasoning_effort: 'REASONING_EFFORT_LOW',
+        model,
+      },
+      project_id: '',
     };
+    return encodeConnectFrame(JSON.stringify(payload));
   }
 
-  async call(
+  // ── Inner call (throttle + breaker wrapped in call()) ──────
+  private async callInner(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
   ): Promise<LlmResponse> {
     const prompt = this.promptFromInput(input);
+    const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
+    const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
+    const bodyBuf = this.buildConnectBody(prompt, options);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
+
+    let res: Response;
     try {
-      const r = await fetch(MOONSHOT_BASE + '/chat/completions', {
+      res = await fetch(url, {
         method: 'POST',
         headers: this.buildHeaders(),
-        body: JSON.stringify(this.buildBody(prompt, options, false)),
-        signal: options.signal,
+        body: bodyBuf,
+        signal: options.signal ?? controller.signal,
       });
-      const text = await r.text();
-      let j: any = null;
-      try { j = JSON.parse(text); } catch {}
-      if (!r.ok) {
-        this.lastCallAt = Date.now();
-        this.lastCallOk = false;
-        this.lastCallError = 'HTTP ' + r.status;
-        if (r.status === 401 || r.status === 403) {
-          throw new KimiAuthError(r.status, (j && j.error && j.error.message) || text.slice(0, 200));
-        }
-        throw new KimiApiError(-1, 'HTTP ' + r.status + ': ' + text.slice(0, 300), r.status);
-      }
-      const content = j && j.choices && j.choices[0] && j.choices[0].message ? j.choices[0].message.content || '' : '';
-      this.lastCallAt = Date.now();
-      this.lastCallOk = true;
-      this.lastCallError = null;
-      return {
-        code: 0,
-        msg: '',
-        data: { content, chat_session_id: (j && j.id) || null, message_id: (j && j.id) || null },
-      };
-    } catch (e) {
-      if (e instanceof KimiAuthError || e instanceof KimiApiError) throw e;
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
       this.lastCallAt = Date.now();
       this.lastCallOk = false;
-      this.lastCallError = e instanceof Error ? e.message : String(e);
-      throw new KimiApiError(-1, 'network: ' + this.lastCallError, 0);
+      this.lastCallError = 'HTTP ' + res.status;
+      if (detectKimiWafSignal(res.status, text)) {
+        log.warn('kimi.completions.waf_signal', { status: res.status, preview: text.slice(0, 160) });
+        throw new KimiApiError(-1, 'WAF signal: ' + text.slice(0, 200), res.status);
+      }
+      log.warn('kimi.completions.http_error', { status: res.status, body: text.slice(0, 400) });
+      if (res.status === 401) throw new KimiExpiredSessionError('Kimi 401: ' + text.slice(0, 200));
+      if (res.status === 403) throw new KimiAuthError(res.status, text.slice(0, 200));
+      throw new KimiApiError(-1, 'HTTP ' + res.status + ': ' + text.slice(0, 300), res.status);
+    }
+
+    const state = newStreamState();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const buf = Buffer.from(buffer, 'binary');
+      const { frames, remainder } = decodeConnectFrames(buf);
+      // Re-encode remainder for next iteration
+      buffer = remainder.toString('binary');
+      for (const frame of frames) {
+        const op = parseEventOp(frame.payload);
+        if (op) applyEventOp(op, state);
+      }
+    }
+    try { reader.releaseLock(); } catch {}
+
+    this.lastCallAt = Date.now();
+    this.lastCallOk = true;
+    this.lastCallError = null;
+    return {
+      code: 0,
+      msg: '',
+      data: {
+        content: state.text,
+        chat_session_id: state.chatId,
+        message_id: state.messageId,
+      },
+    };
+  }
+
+  // ── Public call with throttle + breaker ────────────────────
+  async call(
+    input: string | Array<{ role: string; content: string }>,
+    options: KimiCallOptions = {},
+  ): Promise<LlmResponse> {
+    const decision = this.wafBreaker.canCall();
+    if (!decision.allowed) {
+      throw new KimiApiError(-1, decision.reason || 'WAF cooldown active', 0);
+    }
+    await this.throttle.acquire();
+    try {
+      const result = await this.callInner(input, options);
+      this.wafBreaker.recordSuccess();
+      this.throttle.recordSuccess();
+      return result;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('WAF') || msg.includes('captcha') || msg.includes('rate limit')) {
+        this.wafBreaker.recordWafPunishment();
+        this.throttle.recordWafPunishment();
+      } else {
+        this.throttle.recordNonWafFailure();
+      }
+      throw e;
     }
   }
 
+  // ── Streaming variant ──────────────────────────────────────
   async *stream(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
   ): AsyncGenerator<LlmStreamChunk, void, unknown> {
-    const prompt = this.promptFromInput(input);
-    let r: Response;
-    try {
-      r = await fetch(MOONSHOT_BASE + '/chat/completions', {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: JSON.stringify(this.buildBody(prompt, options, true)),
-        signal: options.signal,
-      });
-    } catch (e) {
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
+    const decision = this.wafBreaker.canCall();
+    if (!decision.allowed) {
+      yield { type: 'error', error: decision.reason || 'WAF cooldown active' };
       return;
     }
-    if (!r.ok || !r.body) {
-      const text = await r.text().catch(() => '');
-      yield { type: 'error', error: 'HTTP ' + r.status + ': ' + text.slice(0, 200) };
-      return;
-    }
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    try { await this.throttle.acquire(); }
+    catch (e) { yield { type: 'error', error: e instanceof Error ? e.message : String(e) }; return; }
+
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const block = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          for (const line of block.split('\n')) {
-            if (!line.startsWith('data:')) continue;
-            const payload = line.slice(5).trim();
-            if (!payload || payload === '[DONE]') continue;
-            let j: any = null;
-            try { j = JSON.parse(payload); } catch { continue; }
-            const delta = j && j.choices && j.choices[0] && j.choices[0].delta ? j.choices[0].delta.content : null;
-            if (typeof delta === 'string' && delta.length > 0) {
-              yield { type: 'chunk', content: delta, raw: payload };
-            }
-          }
-        }
-      }
+      const result = await this.callInner(input, options);
+      if (result.data.content) yield { type: 'chunk', content: result.data.content };
       yield { type: 'done' };
+      this.wafBreaker.recordSuccess();
+      this.throttle.recordSuccess();
     } catch (e) {
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
-    } finally {
-      try { reader.releaseLock(); } catch {}
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('WAF') || msg.includes('captcha')) {
+        this.wafBreaker.recordWafPunishment();
+        this.throttle.recordWafPunishment();
+      } else {
+        this.throttle.recordNonWafFailure();
+      }
+      yield { type: 'error', error: msg };
     }
   }
 
-  isHealthy(): boolean { return this.hasCredentials(); }
+  // ── Health + panel state ───────────────────────────────────
+  isHealthy(): boolean { return this.wafBreaker.isHealthy(); }
 
   async healthCheck(): Promise<LlmHealth> {
-    const key = loadApiKey();
+    const r = this.creds.redacted();
+    const healthy = r.configured && r.hasBearer && this.wafBreaker.isHealthy();
     return {
       engineId: this.id,
-      configured: !!key,
-      healthy: !!key,
-      bearerPrefix: key ? key.slice(0, 6) + '...' : null,
-      base: MOONSHOT_BASE,
-      model: DEFAULT_MODEL,
+      configured: r.configured,
+      healthy,
+      cookiesLength: r.cookiesLength,
+      hasBearer: r.hasBearer,
+      hasCsrf: r.hasCsrf,
+      acquiredAt: r.acquiredAt,
+      wafState: this.wafBreaker.snapshot(),
+      throttleState: this.throttle.snapshot(),
       lastCallAt: this.lastCallAt,
       lastCallOk: this.lastCallOk,
       lastCallError: this.lastCallError,
