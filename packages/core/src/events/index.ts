@@ -9,6 +9,7 @@ export type { RoutePeek } from './handlers/chatIntentRouter';
 export { registerMysticHandler } from './handlers/mysticHandler';
 export { registerGodModeHandler } from './handlers/godmodeHandler';
 export { registerWorkspaceHandler } from './handlers/workspaceHandler';
+export { registerLedgerHandler } from './handlers/ledgerHandler';
 export { registerMissionHandler } from './handlers/missionHandler';
 export { registerResultHandlers } from './handlers/resultHandlers';
 export { createEventsRouter } from './http/EventsRouter';
