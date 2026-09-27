@@ -274,7 +274,7 @@ export class DeepSeekService {
     const prompt = this.promptFromInput(input);
 
     const correlation_id = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-    const route = peekRoute(prompt, correlation_id);
+    const route = peekRoute(options.rawPrompt ?? prompt, correlation_id);
 
     // If /run matched, register the waiter BEFORE emitting so we don't
     // race the termuxHandler's async resolution.

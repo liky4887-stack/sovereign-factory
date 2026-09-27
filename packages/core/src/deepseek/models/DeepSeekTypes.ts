@@ -21,6 +21,7 @@ export interface CallDeepSeekOptions {
   thinkingEnabled?: boolean;
   searchEnabled?: boolean;
   chatSessionId?: string | null;
+  rawPrompt?: string;
   parentMessageId?: number | null;
 }
 
