@@ -8,6 +8,7 @@ import { Router, Request, Response } from 'express';
 import { EngineRegistry } from '../EngineRegistry';
 import { TwinOrchestrator } from '../TwinOrchestrator';
 import { injectIdentity, type InjectMode } from '../../sovereign/IdentityInjector';
+import { dispatchChatCommand } from '../CommandRouter';
 import { QwenWafBlockedError } from '../../qwen/resilience';
 import { QwenAuthError, QwenNoCredentialsError } from '../../qwen/models/QwenErrors';
 import {
@@ -129,6 +130,25 @@ export function createEnginesRouter(
       const input = Array.isArray(messages) ? messages : prompt;
       if (!input) {
         res.status(400).json({ ok: false, error: 'Provide either "prompt" (string) or "messages" (array)' });
+        return;
+      }
+      const rawPrompt = typeof input === 'string'
+        ? input
+        : (Array.isArray(input)
+            ? ((input.filter((m: any) => m.role === 'user').pop() as any)?.content ?? '')
+            : '');
+      const correlation_id = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      const dispatch = await dispatchChatCommand(rawPrompt, correlation_id);
+      if (dispatch.matched) {
+        res.json({
+          ok: true,
+          engineId: engine.id,
+          response: {
+            code: 0,
+            msg: '',
+            data: { content: dispatch.content || '', chat_session_id: null, message_id: null },
+          },
+        });
         return;
       }
       const rawMode = (req.body && req.body.mode) === 'plan' ? 'plan' : 'chat';
