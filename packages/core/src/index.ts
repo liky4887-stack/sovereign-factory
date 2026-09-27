@@ -1,3 +1,17 @@
+// LEGACY ENTRYPOINT — not the canonical boot path.
+//
+// This file boots a REDUCED factory: ledger, projects, tasks, agents, goals,
+// offers, bridge (8790), orchestrator (8791). It does NOT construct or mount:
+//   DeepSeekService, QwenService, KimiService, EngineRegistry, TwinOrchestrator,
+//   ProjectBuilder, SkillLoader, GitHubService, ChatService, MysticRealmService,
+//   GodModeService, IdeService, SystemPowerService, or the UEB handler chain.
+//
+// Canonical entrypoint: apps/backend/src/index.ts
+// The `start` script in packages/core/package.json was changed to prevent
+// accidentally booting this reduced factory.
+//
+// Original docstring follows.
+
 /**
  * src/index.ts - process entrypoint.
  *

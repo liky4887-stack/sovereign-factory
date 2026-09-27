@@ -6,7 +6,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "echo 'LEGACY: use npm run start:backend from repo root'; exit 1",
     "dev": "ts-node src/index.ts",
     "lint": "tsc --noEmit"
   },
