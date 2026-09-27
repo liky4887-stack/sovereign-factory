@@ -123,6 +123,25 @@ const RULES: RouteRule[] = [
     },
   },
   {
+    name: 'events.query',
+    pattern: /^(?:\/events|!events)(?:\s+(\d+))?$/i,
+    build: (m, ctx) => {
+      const limit = m[1] ? Math.max(1, Math.min(200, parseInt(m[1], 10))) : 20;
+      const events = UEB.recent(limit);
+      const lines = events.map((e: any) => {
+        const ts = new Date(e.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        return ts + '  ' + (e.source || '?') + '  ' + (e.event_type || '?');
+      });
+      const text = 'events - ' + events.length + ' recent\n' + lines.join('\n');
+      return {
+        event_type: EVENTS.CHAT_REPLY_READY,
+        source: 'CHAT',
+        payload: { correlation_id: ctx.correlation_id, text },
+        receipt: text,
+      };
+    },
+  },
+  {
     name: 'help',
     pattern: /^(?:\/help|!help)$/i,
     build: (_m, ctx) => ({
