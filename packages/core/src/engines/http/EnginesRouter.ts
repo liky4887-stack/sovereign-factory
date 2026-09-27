@@ -8,6 +8,39 @@ import { Router, Request, Response } from 'express';
 import { EngineRegistry } from '../EngineRegistry';
 import { TwinOrchestrator } from '../TwinOrchestrator';
 import { injectIdentity, type InjectMode } from '../../sovereign/IdentityInjector';
+import { QwenWafBlockedError } from '../../qwen/resilience';
+import { QwenAuthError, QwenNoCredentialsError } from '../../qwen/models/QwenErrors';
+import {
+  KimiWafBlockedError,
+  KimiThrottledError,
+  KimiExpiredSessionError,
+  KimiAuthError,
+  KimiNoCredentialsError,
+} from '../../kimi/models/KimiErrors';
+
+function classifyEngineError(
+  e: unknown,
+  engineId: string,
+): { status: number; body: Record<string, unknown> } {
+  const msg = e instanceof Error ? e.message : String(e);
+  if (e instanceof QwenWafBlockedError || e instanceof KimiWafBlockedError) {
+    const retryAfterMs = (e as any).cooldownRemainingMs;
+    return { status: 503, body: { ok: false, error: msg, code: 'WAF_COOLDOWN', engineId, ...(retryAfterMs ? { retryAfterMs } : {}) } };
+  }
+  if (e instanceof KimiThrottledError) {
+    return { status: 429, body: { ok: false, error: msg, code: 'THROTTLED', engineId, retryAfterMs: e.retryAfterMs } };
+  }
+  if (e instanceof KimiExpiredSessionError) {
+    return { status: 401, body: { ok: false, error: msg, code: 'EXPIRED_SESSION', engineId } };
+  }
+  if (e instanceof KimiAuthError || e instanceof QwenAuthError) {
+    return { status: 401, body: { ok: false, error: msg, code: 'AUTH_REQUIRED', engineId } };
+  }
+  if (e instanceof KimiNoCredentialsError || e instanceof QwenNoCredentialsError) {
+    return { status: 503, body: { ok: false, error: msg, code: 'NO_CREDS', engineId } };
+  }
+  return { status: 502, body: { ok: false, error: msg, code: 'ENGINE_ERROR', engineId } };
+}
 
 export function createEnginesRouter(
   registry: EngineRegistry,
@@ -103,8 +136,8 @@ export function createEnginesRouter(
       const result = await engine.call(finalInput as any, options as any);
       res.json({ ok: true, engineId: engine.id, response: result });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      res.status(502).json({ ok: false, error: msg, engineId: engine.id });
+      const { status, body } = classifyEngineError(e, engine.id);
+      res.status(status).json(body);
     }
   });
 
