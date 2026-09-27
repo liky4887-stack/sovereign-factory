@@ -11,6 +11,7 @@ export interface KimiWafSnapshot {
   cooldownMs: number;
   cooldownRemainingMs: number;
   totalTrips: number;
+  halfOpenInFlight: boolean;
 }
 
 export interface KimiWafDecision {
@@ -36,6 +37,7 @@ export class KimiWafBreaker {
   private state: KimiWafState = 'closed';
   private openedAt: number | null = null;
   private totalTrips = 0;
+  private halfOpenInFlight = false;
 
   constructor(private readonly cooldownMs: number = 3 * 60 * 60 * 1000) {}
 
@@ -46,6 +48,7 @@ export class KimiWafBreaker {
       const elapsed = Date.now() - (this.openedAt ?? Date.now());
       if (elapsed >= this.cooldownMs) {
         this.state = 'half-open';
+        this.halfOpenInFlight = false;
       } else {
         return {
           allowed: false,
@@ -53,7 +56,11 @@ export class KimiWafBreaker {
         };
       }
     }
-    // half-open: allow one probe
+    // half-open: allow exactly one probe
+    if (this.halfOpenInFlight) {
+      return { allowed: false, reason: 'half-open probe already in flight' };
+    }
+    this.halfOpenInFlight = true;
     return { allowed: true };
   }
 
@@ -62,19 +69,22 @@ export class KimiWafBreaker {
       this.state = 'closed';
       this.openedAt = null;
     }
+    this.halfOpenInFlight = false;
   }
 
   recordWafPunishment(): void {
     this.state = 'open';
     this.openedAt = Date.now();
     this.totalTrips += 1;
+    this.halfOpenInFlight = false;
   }
 
   recordNonWafFailure(): void {
     // In half-open, a non-WAF failure means the probe failed but
     // we don't know if the site is punishing us. Stay in half-open
     // so the next call can re-probe, rather than re-opening the breaker.
-    // No state change.
+    // Clear the guard so the next call is allowed to probe again.
+    this.halfOpenInFlight = false;
   }
 
   isHealthy(): boolean { return this.state === 'closed'; }
@@ -89,6 +99,7 @@ export class KimiWafBreaker {
       cooldownMs: this.cooldownMs,
       cooldownRemainingMs: remaining,
       totalTrips: this.totalTrips,
+      halfOpenInFlight: this.halfOpenInFlight,
     };
   }
 }
