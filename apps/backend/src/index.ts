@@ -164,6 +164,11 @@ async function main(): Promise<void> {
     minRequestGapSeconds: config.KIMI.minRequestGapSeconds,
     maxRequestsPerDay: config.KIMI.maxRequestsPerDay,
     concurrencyLimit: config.KIMI.concurrencyLimit,
+    defaultDeviceId: config.KIMI.defaultDeviceId,
+    defaultSessionId: config.KIMI.defaultSessionId,
+    defaultTrafficId: config.KIMI.defaultTrafficId,
+    defaultTimezone: config.KIMI.defaultTimezone,
+    defaultShieldData: config.KIMI.defaultShieldData,
   });
   engineRegistry.register(kimi);
   const twinOrchestrator = new TwinOrchestrator(

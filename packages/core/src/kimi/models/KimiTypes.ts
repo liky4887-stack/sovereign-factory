@@ -50,4 +50,9 @@ export interface KimiServiceOptions {
   minRequestGapSeconds: number;
   maxRequestsPerDay: number;
   concurrencyLimit: number;
+  defaultDeviceId?: string;
+  defaultSessionId?: string;
+  defaultTrafficId?: string;
+  defaultTimezone?: string;
+  defaultShieldData?: string;
 }

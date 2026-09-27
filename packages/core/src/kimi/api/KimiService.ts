@@ -1,11 +1,7 @@
-// Kimi engine — service layer. Implements LlmEngine, mirrors QwenService.
-//
-// Auth: cookie-only. No API keys. No official SDK.
-//
-// Protocol: TODO: REPLACE all `TODO:` markers with real values once a
-// capture from the kimi.ai browser session is provided. The service
-// will register as `engine_kimi`, report configured:false until
-// credentials are POSTed, and route via /kimi/* and /engines/*.
+// Kimi engine — service layer. Implements LlmEngine.
+// Protocol: Connect RPC over HTTP (application/connect+json).
+// Endpoint: POST /apiv2/kimi.gateway.chat.v1.ChatService/Chat
+// Auth: Bearer access token + stable device headers.
 import * as crypto from 'node:crypto';
 import { KimiCredentialStore } from '../storage/KimiCredentialStore';
 import {
@@ -19,6 +15,13 @@ import {
   KimiExpiredSessionError,
 } from '../models/KimiErrors';
 import { KimiThrottle, KimiWafBreaker, detectKimiWafSignal } from '../resilience';
+import {
+  encodeConnectFrame,
+  decodeConnectFrames,
+  parseEventOp,
+  newStreamState,
+  applyEventOp,
+} from './KimiConnect';
 import { log } from '../../shared/logger';
 import {
   LlmEngine,
@@ -28,40 +31,6 @@ import {
   LlmHealth,
   ENGINE_IDS,
 } from '../../engines/LlmEngine';
-
-interface SseState {
-  text: string;
-  lastPath: string | null;
-  chatId: string | null;
-}
-
-function applyKimiSsePayload(payload: string, state: SseState): string {
-  if (!payload || payload === '[DONE]') return '';
-  let j: any;
-  try { j = JSON.parse(payload); } catch { return ''; }
-  const before = state.text.length;
-
-  // Shape A: OpenAI-style { choices: [{ delta: { content } }] }
-  if (Array.isArray(j.choices) && j.choices.length > 0) {
-    const c = j.choices[0];
-    const delta = c?.delta?.content ?? c?.message?.content ?? c?.text;
-    if (typeof delta === 'string') state.text += delta;
-    state.lastPath = 'choices/0';
-    return state.text.slice(before);
-  }
-  // Shape B: { content: "..." }
-  if (typeof j.content === 'string') {
-    state.text += j.content;
-    state.lastPath = 'content';
-    return state.text.slice(before);
-  }
-  // Shape C: bare { v: "..." } continuation
-  if (typeof j.v === 'string' && state.lastPath) {
-    state.text += j.v;
-    return state.text.slice(before);
-  }
-  return '';
-}
 
 export class KimiService implements LlmEngine {
   readonly id = ENGINE_IDS.KIMI;
@@ -79,7 +48,6 @@ export class KimiService implements LlmEngine {
     private readonly opts: KimiServiceOptions,
   ) {
     this.throttle = new KimiThrottle(
-      // State file next to the credentials file
       opts.credentialsFile.replace(/\.json$/, '.throttle.json'),
       opts.minRequestGapSeconds,
       opts.maxRequestsPerDay,
@@ -104,7 +72,10 @@ export class KimiService implements LlmEngine {
   }
 
   clearCredentials(): void { this.creds.clear(); }
-  hasCredentials(): boolean { return this.creds.has(); }
+  hasCredentials(): boolean {
+    const c = this.creds.get();
+    return !!c && c.cookies.length > 0 && !!c.bearerToken;
+  }
 
   getCredentialsRedacted(): LlmCredentialsRedacted {
     const r = this.creds.redacted();
@@ -117,9 +88,7 @@ export class KimiService implements LlmEngine {
     };
   }
 
-  getRawCredentials() {
-    return this.creds.get();
-  }
+  getRawCredentials() { return this.creds.get(); }
 
   private requireCreds() {
     const c = this.creds.get();
@@ -127,26 +96,37 @@ export class KimiService implements LlmEngine {
     return c;
   }
 
-  // ── Header construction ────────────────────────────────────
-  // One stable browser signature. No UA rotation. No fake jitter.
-  private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+  // ── Headers ────────────────────────────────────────────────
+  // Stable per-device headers. No rotation.
+  private buildHeaders(): Record<string, string> {
     const c = this.requireCreds();
     const h: Record<string, string> = {
-      'accept': 'application/json, text/plain, */*',
-      'accept-language': 'en-US,en;q=0.9',
-      'content-type': 'application/json',
+      'accept': '*/*',
+      'accept-language': 'en-US',
+      'content-type': 'application/connect+json',
+      'connect-protocol-version': '1',
       'cookie': c.cookies,
       'origin': this.opts.baseUrl,
       'referer': this.opts.baseUrl + '/',
-      'user-agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Mobile Safari/537.36',
+      'priority': 'u=1, i',
+      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
+      'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
+      'sec-ch-ua-mobile': '?0',
+      'sec-ch-ua-platform': '"Linux"',
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
+      'x-language': 'en-US',
+      'x-msh-platform': 'web',
+      'x-msh-version': '2.3.0',
     };
     if (c.bearerToken) h['authorization'] = 'Bearer ' + c.bearerToken;
-    if (c.csrfToken) h['x-csrf-token'] = c.csrfToken;
+    if (this.opts.defaultTimezone) h['r-timezone'] = this.opts.defaultTimezone;
+    if (this.opts.defaultDeviceId) h['x-msh-device-id'] = this.opts.defaultDeviceId;
+    if (this.opts.defaultSessionId) h['x-msh-session-id'] = this.opts.defaultSessionId;
+    if (this.opts.defaultTrafficId) h['x-traffic-id'] = this.opts.defaultTrafficId;
+    if (this.opts.defaultShieldData) h['x-msh-shield-data'] = this.opts.defaultShieldData;
     if (c.extraHeaders) Object.assign(h, c.extraHeaders);
-    if (extra) Object.assign(h, extra);
     return h;
   }
 
@@ -159,24 +139,37 @@ export class KimiService implements LlmEngine {
     return last ? last.content : input[input.length - 1].content;
   }
 
-  // ── Body construction ──────────────────────────────────────
-  // TODO: REPLACE once Kimi's real payload shape is known from a
-  // captured browser request. Current shape is OpenAI-compatible.
-  private buildBody(prompt: string, options: KimiCallOptions): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      model: options.model ?? this.opts.defaultModel,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-      temperature: options.temperature,
-      max_tokens: options.maxTokens,
+  // ── Connect request body ───────────────────────────────────
+  private buildConnectBody(prompt: string, options: KimiCallOptions): Buffer {
+    const chatId = options.chatSessionId || crypto.randomUUID();
+    const parentId = options.parentMessageId || crypto.randomUUID();
+    const model = options.model ?? this.opts.defaultModel;
+    const payload = {
+      chat_id: chatId,
+      scenario: 'SCENARIO_CHAT',
+      tools: [
+        { type: 'TOOL_TYPE_SEARCH', search: {} },
+        { type: 'TOOL_TYPE_CRON_JOB' },
+      ],
+      message: {
+        parent_id: parentId,
+        role: 'user',
+        blocks: [{ message_id: '', text: { content: prompt } }],
+        scenario: 'SCENARIO_CHAT',
+        is_goal: false,
+      },
+      options: {
+        thinking: options.thinkingEnabled ?? true,
+        enable_plugin: true,
+        reasoning_effort: 'REASONING_EFFORT_LOW',
+        model,
+      },
+      project_id: '',
     };
-    for (const k of Object.keys(body)) {
-      if (body[k] === undefined) delete body[k];
-    }
-    return body;
+    return encodeConnectFrame(JSON.stringify(payload));
   }
 
-  // ── Inner call (throttle + breaker wrapper lives in call()) ─
+  // ── Inner call (throttle + breaker wrapped in call()) ──────
   private async callInner(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
@@ -184,6 +177,7 @@ export class KimiService implements LlmEngine {
     const prompt = this.promptFromInput(input);
     const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
+    const bodyBuf = this.buildConnectBody(prompt, options);
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
@@ -192,63 +186,30 @@ export class KimiService implements LlmEngine {
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: this.buildHeaders({ 'accept': 'text/event-stream' }),
-        body: JSON.stringify(this.buildBody(prompt, options)),
+        headers: this.buildHeaders(),
+        body: bodyBuf,
         signal: options.signal ?? controller.signal,
       });
     } finally {
       clearTimeout(timer);
     }
 
-    const ctype = (res.headers.get('content-type') || '').toLowerCase();
-
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
       this.lastCallAt = Date.now();
       this.lastCallOk = false;
       this.lastCallError = 'HTTP ' + res.status;
-
       if (detectKimiWafSignal(res.status, text)) {
         log.warn('kimi.completions.waf_signal', { status: res.status, preview: text.slice(0, 160) });
         throw new KimiApiError(-1, 'WAF signal: ' + text.slice(0, 200), res.status);
       }
-      if (res.status === 401) {
-        throw new KimiExpiredSessionError();
-      }
-      if (res.status === 403) {
-        throw new KimiAuthError(res.status, text.slice(0, 200));
-      }
+      log.warn('kimi.completions.http_error', { status: res.status, body: text.slice(0, 400) });
+      if (res.status === 401) throw new KimiExpiredSessionError('Kimi 401: ' + text.slice(0, 200));
+      if (res.status === 403) throw new KimiAuthError(res.status, text.slice(0, 200));
       throw new KimiApiError(-1, 'HTTP ' + res.status + ': ' + text.slice(0, 300), res.status);
     }
 
-    // Non-SSE branch (single JSON body)
-    if (!ctype.includes('text/event-stream')) {
-      const raw = await res.text().catch(() => '');
-      let j: any = null;
-      try { j = JSON.parse(raw); } catch {}
-
-      if (detectKimiWafSignal(res.status, raw)) {
-        log.warn('kimi.completions.waf_signal', { status: res.status, preview: raw.slice(0, 160) });
-        throw new KimiApiError(-1, 'WAF signal in JSON body: ' + raw.slice(0, 200), res.status);
-      }
-
-      let content = '';
-      if (j && typeof j === 'object') {
-        if (typeof j.content === 'string') content = j.content;
-        else if (j.data && typeof j.data.content === 'string') content = j.data.content;
-        else if (j.choices && j.choices[0]?.message?.content) content = j.choices[0].message.content;
-      }
-      this.lastCallAt = Date.now();
-      this.lastCallOk = !!content;
-      this.lastCallError = content ? null : 'json body without content';
-      if (content) {
-        return { code: 0, msg: '', data: { content, chat_session_id: null, message_id: null } };
-      }
-      throw new KimiApiError(-1, 'non-SSE body with no content: ' + raw.slice(0, 300), res.status);
-    }
-
-    // SSE branch
-    const state: SseState = { text: '', lastPath: null, chatId: null };
+    const state = newStreamState();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -257,16 +218,13 @@ export class KimiService implements LlmEngine {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf('\n\n')) !== -1) {
-        const block = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        for (const line of block.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          applyKimiSsePayload(payload, state);
-        }
+      const buf = Buffer.from(buffer, 'binary');
+      const { frames, remainder } = decodeConnectFrames(buf);
+      // Re-encode remainder for next iteration
+      buffer = remainder.toString('binary');
+      for (const frame of frames) {
+        const op = parseEventOp(frame.payload);
+        if (op) applyEventOp(op, state);
       }
     }
     try { reader.releaseLock(); } catch {}
@@ -274,7 +232,15 @@ export class KimiService implements LlmEngine {
     this.lastCallAt = Date.now();
     this.lastCallOk = true;
     this.lastCallError = null;
-    return { code: 0, msg: '', data: { content: state.text, chat_session_id: state.chatId, message_id: null } };
+    return {
+      code: 0,
+      msg: '',
+      data: {
+        content: state.text,
+        chat_session_id: state.chatId,
+        message_id: state.messageId,
+      },
+    };
   }
 
   // ── Public call with throttle + breaker ────────────────────
@@ -298,14 +264,13 @@ export class KimiService implements LlmEngine {
         this.wafBreaker.recordWafPunishment();
         this.throttle.recordWafPunishment();
       } else {
-        this.wafBreaker.recordNonWafFailure?.();
         this.throttle.recordNonWafFailure();
       }
       throw e;
     }
   }
 
-  // ── Streaming variant (same throttle semantics) ────────────
+  // ── Streaming variant ──────────────────────────────────────
   async *stream(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
@@ -315,73 +280,24 @@ export class KimiService implements LlmEngine {
       yield { type: 'error', error: decision.reason || 'WAF cooldown active' };
       return;
     }
+    try { await this.throttle.acquire(); }
+    catch (e) { yield { type: 'error', error: e instanceof Error ? e.message : String(e) }; return; }
+
     try {
-      await this.throttle.acquire();
+      const result = await this.callInner(input, options);
+      if (result.data.content) yield { type: 'chunk', content: result.data.content };
+      yield { type: 'done' };
+      this.wafBreaker.recordSuccess();
+      this.throttle.recordSuccess();
     } catch (e) {
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
-      return;
-    }
-
-    const prompt = this.promptFromInput(input);
-    const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
-    const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: this.buildHeaders({ 'accept': 'text/event-stream' }),
-        body: JSON.stringify(this.buildBody(prompt, options)),
-        signal: options.signal,
-      });
-    } catch (e) {
-      this.throttle.recordNonWafFailure();
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
-      return;
-    }
-
-    if (!res.ok || !res.body) {
-      const text = await res.text().catch(() => '');
-      this.throttle.recordNonWafFailure();
-      if (detectKimiWafSignal(res.status, text)) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('WAF') || msg.includes('captcha')) {
         this.wafBreaker.recordWafPunishment();
         this.throttle.recordWafPunishment();
+      } else {
+        this.throttle.recordNonWafFailure();
       }
-      yield { type: 'error', error: 'HTTP ' + res.status + ': ' + text.slice(0, 300) };
-      return;
-    }
-
-    const state: SseState = { text: '', lastPath: null, chatId: null };
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const block = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          for (const line of block.split('\n')) {
-            if (!line.startsWith('data:')) continue;
-            const payload = line.slice(5).trim();
-            if (!payload) continue;
-            if (payload === '[DONE]') { yield { type: 'done' }; return; }
-            const delta = applyKimiSsePayload(payload, state);
-            if (delta) yield { type: 'chunk', content: delta, raw: payload };
-          }
-        }
-      }
-      yield { type: 'done' };
-    } catch (e) {
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
-    } finally {
-      try { reader.releaseLock(); } catch {}
-      this.throttle.recordSuccess();
-      this.wafBreaker.recordSuccess();
+      yield { type: 'error', error: msg };
     }
   }
 
@@ -390,7 +306,7 @@ export class KimiService implements LlmEngine {
 
   async healthCheck(): Promise<LlmHealth> {
     const r = this.creds.redacted();
-    const healthy = r.configured && this.wafBreaker.isHealthy();
+    const healthy = r.configured && r.hasBearer && this.wafBreaker.isHealthy();
     return {
       engineId: this.id,
       configured: r.configured,

@@ -87,14 +87,19 @@ export const config = Object.freeze({
     primaryEngineId: env('PRIMARY_ENGINE_ID', 'engine_deepseek'),
   },
   KIMI: {
-    baseUrl: env('KIMI_BASE_URL', 'https://kimi.ai').replace(/\/+$/, ''),
-    defaultTargetPath: env('KIMI_DEFAULT_TARGET', '/api/chat/completions'),
-    defaultModel: env('KIMI_DEFAULT_MODEL', 'kimi-latest'),
-    requestTimeoutMs: envInt('KIMI_REQUEST_TIMEOUT_MS', 90000),
+    baseUrl: env('KIMI_BASE_URL', 'https://www.kimi.ai').replace(/\/+$/, ''),
+    defaultTargetPath: env('KIMI_DEFAULT_TARGET', '/apiv2/kimi.gateway.chat.v1.ChatService/Chat'),
+    defaultModel: env('KIMI_DEFAULT_MODEL', 'k2d6-chat'),
+    requestTimeoutMs: envInt('KIMI_REQUEST_TIMEOUT_MS', 120000),
     credentialsFile: env('KIMI_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'kimi-creds.json')),
     minRequestGapSeconds: envInt('KIMI_MIN_REQUEST_GAP_SECONDS', 900),
     maxRequestsPerDay: envInt('KIMI_MAX_REQUESTS_PER_DAY', 30),
     concurrencyLimit: envInt('KIMI_CONCURRENCY_LIMIT', 1),
+    defaultDeviceId: env('KIMI_DEVICE_ID', ''),
+    defaultSessionId: env('KIMI_SESSION_ID', ''),
+    defaultTrafficId: env('KIMI_TRAFFIC_ID', ''),
+    defaultTimezone: env('KIMI_TIMEZONE', 'Africa/Tripoli'),
+    defaultShieldData: env('KIMI_SHIELD_DATA', ''),
   },
 });
 
