@@ -163,7 +163,10 @@ export function createDeepSeekRouter(service: DeepSeekService): Router {
         finalInput = arr;
       }
 
-      const result = await service.callDeepSeek(finalInput, options);
+      const rawPrompt = typeof input === 'string'
+        ? input
+        : (Array.isArray(input) ? ((input.filter((m: any) => m.role === 'user').pop() as any)?.content ?? '') : '');
+      const result = await service.callDeepSeek(finalInput, { ...options, rawPrompt });
 
       // Persist both sides of the turn via the event bus.
       const promptText = typeof input === 'string'
