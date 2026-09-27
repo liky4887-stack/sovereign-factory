@@ -26,9 +26,11 @@ export interface WafCallDecision {
 
 export class QwenWafBlockedError extends Error {
   readonly code = 'QWEN_WAF_BLOCKED';
-  constructor(message: string) {
+  cooldownRemainingMs: number;
+  constructor(message: string, cooldownRemainingMs: number = 0) {
     super(message);
     this.name = 'QwenWafBlockedError';
+    this.cooldownRemainingMs = cooldownRemainingMs;
   }
 }
 

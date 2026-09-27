@@ -600,7 +600,10 @@ export class QwenService implements LlmEngine {
   ): Promise<LlmResponse> {
     const decision = this.wafBreaker.canCall();
     if (!decision.allowed) {
-      throw new QwenWafBlockedError(decision.reason || 'Qwen WAF cooldown active');
+      throw new QwenWafBlockedError(
+        decision.reason || 'Qwen WAF cooldown active',
+        this.wafBreaker.snapshot().cooldownRemainingMs,
+      );
     }
     await this.throttle.acquire();
     try {
@@ -610,6 +613,7 @@ export class QwenService implements LlmEngine {
     } catch (e) {
       if (e instanceof QwenWafBlockedError) {
         this.wafBreaker.recordWafPunishment();
+        (e as any).cooldownRemainingMs = this.wafBreaker.snapshot().cooldownRemainingMs;
       } else {
         this.wafBreaker.recordNonWafFailure();
       }
