@@ -50,6 +50,27 @@ export function createQwenRouter(service: QwenService): Router {
     res.json({ ok: true, status: service.getCredentialsRedacted() });
   });
 
+  router.get('/credentials/raw', (_req: Request, res: Response) => {
+    const creds = service.getRawCredentials();
+    if (!creds) {
+      res.status(404).json({ ok: false, error: 'no credentials' });
+      return;
+    }
+    res.json({
+      ok: true,
+      values: {
+        cookies: creds.cookies,
+        accessToken: creds.accessToken ?? null,
+        refreshToken: creds.refreshToken ?? null,
+        bxUa: creds.bxUa ?? null,
+        bxUmidToken: creds.bxUmidToken ?? null,
+        bxV: creds.bxV ?? null,
+        timezone: creds.timezone ?? null,
+        acquiredAt: creds.acquiredAt,
+      },
+    });
+  });
+
   router.post('/credentials', (req: Request, res: Response) => {
     try {
       const body = req.body ?? {};

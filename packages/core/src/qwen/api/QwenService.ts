@@ -123,6 +123,11 @@ export class QwenService implements LlmEngine {
     return this.creds.has();
   }
 
+  /** Full raw credentials for the local debug panel. */
+  getRawCredentials(): import('../models/QwenTypes').QwenCredentials | null {
+    return this.creds.get();
+  }
+
   getCredentialsRedacted(): LlmCredentialsRedacted {
     const r = this.creds.redacted();
     return {
