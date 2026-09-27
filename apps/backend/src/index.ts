@@ -54,6 +54,8 @@ import { SkillLoader } from '../../../packages/core/src/skills/SkillLoader';
 import { GitHubService } from '../../../packages/core/src/github/api/GitHubService';
 import { QwenService } from '../../../packages/core/src/qwen/api/QwenService';
 import { QwenCredentialStore } from '../../../packages/core/src/qwen/storage/QwenCredentialStore';
+import { KimiService } from '../../../packages/core/src/kimi/api/KimiService';
+import { KimiCredentialStore } from '../../../packages/core/src/kimi/storage/KimiCredentialStore';
 import { EngineRegistry } from '../../../packages/core/src/engines/EngineRegistry';
 import { TwinOrchestrator } from '../../../packages/core/src/engines/TwinOrchestrator';
 import { ENGINE_IDS } from '../../../packages/core/src/engines/LlmEngine';
@@ -151,6 +153,19 @@ async function main(): Promise<void> {
   const engineRegistry = new EngineRegistry();
   engineRegistry.register(new DeepSeekEngineAdapter(deepseek));
   engineRegistry.register(qwen);
+  // ─── Kimi engine (cookie-only, Invisible Man throttle) ───────
+  const kimiCreds = new KimiCredentialStore(config.KIMI.credentialsFile);
+  const kimi = new KimiService(kimiCreds, {
+    baseUrl: config.KIMI.baseUrl,
+    defaultTargetPath: config.KIMI.defaultTargetPath,
+    defaultModel: config.KIMI.defaultModel,
+    requestTimeoutMs: config.KIMI.requestTimeoutMs,
+    credentialsFile: config.KIMI.credentialsFile,
+    minRequestGapSeconds: config.KIMI.minRequestGapSeconds,
+    maxRequestsPerDay: config.KIMI.maxRequestsPerDay,
+    concurrencyLimit: config.KIMI.concurrencyLimit,
+  });
+  engineRegistry.register(kimi);
   const twinOrchestrator = new TwinOrchestrator(
     engineRegistry,
     config.QWEN.primaryEngineId,
@@ -231,6 +246,7 @@ async function main(): Promise<void> {
     skillLoader,
     github,
     qwen,
+    kimi,
     engineRegistry,
     twinOrchestrator,
   });

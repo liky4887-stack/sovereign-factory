@@ -79,6 +79,7 @@ export interface LlmEngine {
 export const ENGINE_IDS = {
   DEEPSEEK: 'engine_deepseek',
   QWEN: 'engine_qwen',
+  KIMI: 'engine_kimi',
 } as const;
 
 export type EngineId = typeof ENGINE_IDS[keyof typeof ENGINE_IDS];

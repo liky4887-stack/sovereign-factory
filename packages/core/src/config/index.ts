@@ -86,6 +86,16 @@ export const config = Object.freeze({
     enginePolicy: env('ENGINE_POLICY', 'all') as 'all' | 'first-available' | 'fastest' | 'primary-with-fallback',
     primaryEngineId: env('PRIMARY_ENGINE_ID', 'engine_deepseek'),
   },
+  KIMI: {
+    baseUrl: env('KIMI_BASE_URL', 'https://kimi.ai').replace(/\/+$/, ''),
+    defaultTargetPath: env('KIMI_DEFAULT_TARGET', '/api/chat/completions'),
+    defaultModel: env('KIMI_DEFAULT_MODEL', 'kimi-latest'),
+    requestTimeoutMs: envInt('KIMI_REQUEST_TIMEOUT_MS', 90000),
+    credentialsFile: env('KIMI_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'kimi-creds.json')),
+    minRequestGapSeconds: envInt('KIMI_MIN_REQUEST_GAP_SECONDS', 900),
+    maxRequestsPerDay: envInt('KIMI_MAX_REQUESTS_PER_DAY', 30),
+    concurrencyLimit: envInt('KIMI_CONCURRENCY_LIMIT', 1),
+  },
 });
 
 export type Config = typeof config;
