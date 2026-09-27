@@ -43,6 +43,11 @@ import { SkillLoader } from '../skills/SkillLoader';
 import { createSkillsRouter } from '../skills/http/SkillsRouter';
 import { GitHubService } from '../github/api/GitHubService';
 import { createGitHubRouter } from '../github/http/GitHubRouter';
+import { QwenService } from '../qwen/api/QwenService';
+import { createQwenRouter } from '../qwen/http/QwenRouter';
+import { EngineRegistry } from '../engines/EngineRegistry';
+import { TwinOrchestrator } from '../engines/TwinOrchestrator';
+import { createEnginesRouter } from '../engines/http/EnginesRouter';
 import bridgeProxyRouter from './routes/bridgeProxy';
 
 export interface TermuxBridgeServerOptions {
@@ -62,6 +67,9 @@ export interface TermuxBridgeServerOptions {
   projectStorage: ProjectFileStorage;
   skillLoader: SkillLoader;
   github: GitHubService;
+  qwen: QwenService;
+  engineRegistry: EngineRegistry;
+  twinOrchestrator: TwinOrchestrator;
 }
 
 export class TermuxBridgeServer {
@@ -83,6 +91,9 @@ export class TermuxBridgeServer {
   private projectStorage: ProjectFileStorage;
   private skillLoader: SkillLoader;
   private github: GitHubService;
+  private qwen: QwenService;
+  private engineRegistry: EngineRegistry;
+  private twinOrchestrator: TwinOrchestrator;
 
   constructor(opts: TermuxBridgeServerOptions) {
     this.ledger = opts.ledger;
@@ -101,6 +112,9 @@ export class TermuxBridgeServer {
     this.projectStorage = opts.projectStorage;
     this.skillLoader = opts.skillLoader;
     this.github = opts.github;
+    this.qwen = opts.qwen;
+    this.engineRegistry = opts.engineRegistry;
+    this.twinOrchestrator = opts.twinOrchestrator;
     this.app = express();
     this.app.disable('x-powered-by');
     this.app.use('/bridge', express.raw({ type: '*/*', limit: '20mb' }));
@@ -131,6 +145,8 @@ export class TermuxBridgeServer {
     this.app.use('/chat', createChatRouter(this.chat));
     this.app.use('/debug', createAuthDebugRouter());
     this.app.use('/skills', createSkillsRouter(this.skillLoader));
+    this.app.use('/qwen', createQwenRouter(this.qwen));
+    this.app.use('/engines', createEnginesRouter(this.engineRegistry, this.twinOrchestrator));
     this.app.use(createGitHubRouter({
       github: this.github,
       storage: this.projectStorage,

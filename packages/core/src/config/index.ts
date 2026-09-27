@@ -77,6 +77,15 @@ export const config = Object.freeze({
   SOVEREIGN: {
     promptFile: env('SOVEREIGN_PROMPT_FILE', path.join(HOME, 'sovereign-factory', 'prompts', 'sovereign-factory.md')),
   },
+  QWEN: {
+    baseUrl: env('QWEN_BASE_URL', 'https://chat.qwen.ai').replace(/\/+$/, ''),
+    defaultTargetPath: env('QWEN_DEFAULT_TARGET', '/api/v1/chat/completions'),
+    defaultModel: env('QWEN_DEFAULT_MODEL', 'qwen-max'),
+    requestTimeoutMs: envInt('QWEN_REQUEST_TIMEOUT_MS', 60000),
+    credentialsFile: env('QWEN_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'qwen-creds.json')),
+    enginePolicy: env('ENGINE_POLICY', 'all') as 'all' | 'first-available' | 'fastest' | 'primary-with-fallback',
+    primaryEngineId: env('PRIMARY_ENGINE_ID', 'engine_deepseek'),
+  },
 });
 
 export type Config = typeof config;

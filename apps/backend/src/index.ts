@@ -52,6 +52,12 @@ import { ProjectFileStorage } from '../../../packages/core/src/projects/builder/
 import { ProjectBuilder } from '../../../packages/core/src/projects/builder/ProjectBuilder';
 import { SkillLoader } from '../../../packages/core/src/skills/SkillLoader';
 import { GitHubService } from '../../../packages/core/src/github/api/GitHubService';
+import { QwenService } from '../../../packages/core/src/qwen/api/QwenService';
+import { QwenCredentialStore } from '../../../packages/core/src/qwen/storage/QwenCredentialStore';
+import { EngineRegistry } from '../../../packages/core/src/engines/EngineRegistry';
+import { TwinOrchestrator } from '../../../packages/core/src/engines/TwinOrchestrator';
+import { ENGINE_IDS } from '../../../packages/core/src/engines/LlmEngine';
+import { DeepSeekEngineAdapter } from '../../../packages/core/src/engines/adapters/DeepSeekEngineAdapter';
 import { JsonChatRepository } from '../../../packages/core/src/chat/storage/JsonChatRepository';
 
 async function main(): Promise<void> {
@@ -131,6 +137,26 @@ async function main(): Promise<void> {
   // GitHub publisher — credentials auto-loaded from disk on construct.
   const github = new GitHubService(config.GITHUB.credentialsFile);
 
+  // ─── Qwen engine (twin to DeepSeek) ─────────────────────────────────
+  const qwenCreds = new QwenCredentialStore(config.QWEN.credentialsFile);
+  const qwen = new QwenService(qwenCreds, {
+    baseUrl: config.QWEN.baseUrl,
+    defaultTargetPath: config.QWEN.defaultTargetPath,
+    defaultModel: config.QWEN.defaultModel,
+    requestTimeoutMs: config.QWEN.requestTimeoutMs,
+    credentialsFile: config.QWEN.credentialsFile,
+  });
+
+  // ─── Engine registry + twin orchestrator ────────────────────────────
+  const engineRegistry = new EngineRegistry();
+  engineRegistry.register(new DeepSeekEngineAdapter(deepseek));
+  engineRegistry.register(qwen);
+  const twinOrchestrator = new TwinOrchestrator(
+    engineRegistry,
+    config.QWEN.primaryEngineId,
+    config.QWEN.enginePolicy,
+  );
+
   // Boot-time credential loading (file takes precedence over env vars).
   if (config.DEEPSEEK.credentialsFile && existsSync(config.DEEPSEEK.credentialsFile)) {
     try {
@@ -204,6 +230,9 @@ async function main(): Promise<void> {
     projectStorage,
     skillLoader,
     github,
+    qwen,
+    engineRegistry,
+    twinOrchestrator,
   });
   await bridgeServer.start();
 
