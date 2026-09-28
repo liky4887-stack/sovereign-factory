@@ -1,27 +1,18 @@
-// Kimi engine — service layer. Implements LlmEngine.
-// Protocol: Connect RPC over HTTP (application/connect+json).
-// Endpoint: POST /apiv2/kimi.gateway.chat.v1.ChatService/Chat
-// Auth: Bearer access token + stable device headers.
-import * as crypto from 'node:crypto';
+// Kimi engine — talks to the local Deno gateway instead of the Kimi
+// web endpoint directly.
+//
+// Background: Node's undici HTTP stack gets a 401 signature is invalid
+// from www.kimi.ai for reasons we could not reproduce in the header/
+// body layer. The same request from Deno succeeds. So the working shape
+// is a small Deno gateway (~/kimi-local/main.ts) on 127.0.0.1:8088 that
+// performs the Connect RPC call, and KimiService talks to the gateway
+// over plain OpenAI-shaped JSON.
 import { KimiCredentialStore } from '../storage/KimiCredentialStore';
-import {
-  KimiCallOptions,
-  KimiServiceOptions,
-} from '../models/KimiTypes';
+import { KimiCallOptions, KimiServiceOptions } from '../models/KimiTypes';
 import {
   KimiApiError,
-  KimiAuthError,
   KimiNoCredentialsError,
-  KimiExpiredSessionError,
 } from '../models/KimiErrors';
-import { KimiThrottle, KimiWafBreaker, detectKimiWafSignal } from '../resilience';
-import {
-  encodeConnectFrame,
-  decodeConnectFrames,
-  parseEventOp,
-  newStreamState,
-  applyEventOp,
-} from './KimiConnect';
 import { log } from '../../shared/logger';
 import {
   LlmEngine,
@@ -32,6 +23,11 @@ import {
   ENGINE_IDS,
 } from '../../engines/LlmEngine';
 
+const GATEWAY_URL =
+  (process.env.KIMI_GATEWAY_URL || 'http://127.0.0.1:8088').replace(/\/+$/, '');
+const GATEWAY_KEY = process.env.KIMI_GATEWAY_KEY || 'sk-local-kimi';
+const GATEWAY_MODEL = process.env.KIMI_GATEWAY_MODEL || 'k2d6-chat';
+
 export class KimiService implements LlmEngine {
   readonly id = ENGINE_IDS.KIMI;
   readonly label = 'Kimi';
@@ -40,41 +36,30 @@ export class KimiService implements LlmEngine {
   private lastCallOk: boolean | null = null;
   private lastCallError: string | null = null;
 
-  private readonly throttle: KimiThrottle;
-  private readonly wafBreaker = new KimiWafBreaker(3 * 60 * 60 * 1000);
-
   constructor(
     private readonly creds: KimiCredentialStore,
     private readonly opts: KimiServiceOptions,
-  ) {
-    this.throttle = new KimiThrottle(
-      opts.credentialsFile.replace(/\.json$/, '.throttle.json'),
-      opts.minRequestGapSeconds,
-      opts.maxRequestsPerDay,
-    );
-  }
+  ) {}
 
-  // ── Credentials ────────────────────────────────────────────
+  // ── Credentials (kept for interface parity; the gateway owns the real creds) ──
   setCredentials(input: Record<string, unknown>): Record<string, unknown> {
     const stored = this.creds.set({
       cookies: typeof input.cookies === 'string' ? input.cookies : '',
-      bearerToken: typeof input.bearerToken === 'string' ? input.bearerToken : undefined,
+      bearerToken: typeof input.bearerToken === 'string' ? input.bearerToken.trim() : undefined,
       csrfToken: typeof input.csrfToken === 'string' ? input.csrfToken : undefined,
       extraHeaders: typeof input.extraHeaders === 'object' && input.extraHeaders !== null
         ? (input.extraHeaders as Record<string, string>)
         : undefined,
     });
-    return {
-      cookiesLength: stored.cookies.length,
-      hasBearer: !!stored.bearerToken,
-      hasCsrf: !!stored.csrfToken,
-    };
+    return { cookiesLength: stored.cookies.length, hasBearer: !!stored.bearerToken, hasCsrf: !!stored.csrfToken };
   }
 
   clearCredentials(): void { this.creds.clear(); }
+
   hasCredentials(): boolean {
-    const c = this.creds.get();
-    return !!c && c.cookies.length > 0 && !!c.bearerToken;
+    // The gateway reads the credentials itself from ~/cookies/kimi-creds.json.
+    // We report true when the Kimi credential store has something.
+    return this.creds.has();
   }
 
   getCredentialsRedacted(): LlmCredentialsRedacted {
@@ -90,44 +75,12 @@ export class KimiService implements LlmEngine {
 
   getRawCredentials() { return this.creds.get(); }
 
-  private requireCreds() {
-    const c = this.creds.get();
-    if (!c) throw new KimiNoCredentialsError();
-    return c;
-  }
-
-  // ── Headers ────────────────────────────────────────────────
-  // Stable per-device headers. No rotation.
-  private buildHeaders(): Record<string, string> {
-    const c = this.requireCreds();
-    const h: Record<string, string> = {
-      'accept': '*/*',
-      'accept-language': 'en-US',
-      'content-type': 'application/connect+json',
-      'connect-protocol-version': '1',
-      'cookie': c.cookies,
-      'origin': this.opts.baseUrl,
-      'referer': this.opts.baseUrl + '/',
-      'priority': 'u=1, i',
-      'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36',
-      'sec-ch-ua': '"Chromium";v="127", "Not)A;Brand";v="99", "Microsoft Edge Simulate";v="127", "Lemur";v="127"',
-      'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Linux"',
-      'sec-fetch-dest': 'empty',
-      'sec-fetch-mode': 'cors',
-      'sec-fetch-site': 'same-origin',
-      'x-language': 'en-US',
-      'x-msh-platform': 'web',
-      'x-msh-version': '2.3.0',
+  private gatewayHeaders(): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      'accept': 'application/json',
+      'authorization': 'Bearer ' + GATEWAY_KEY,
     };
-    if (c.bearerToken) h['authorization'] = 'Bearer ' + c.bearerToken;
-    if (this.opts.defaultTimezone) h['r-timezone'] = this.opts.defaultTimezone;
-    if (this.opts.defaultDeviceId) h['x-msh-device-id'] = this.opts.defaultDeviceId;
-    if (this.opts.defaultSessionId) h['x-msh-session-id'] = this.opts.defaultSessionId;
-    if (this.opts.defaultTrafficId) h['x-traffic-id'] = this.opts.defaultTrafficId;
-    if (this.opts.defaultShieldData) h['x-msh-shield-data'] = this.opts.defaultShieldData;
-    if (c.extraHeaders) Object.assign(h, c.extraHeaders);
-    return h;
   }
 
   private promptFromInput(input: string | Array<{ role: string; content: string }>): string {
@@ -139,193 +92,99 @@ export class KimiService implements LlmEngine {
     return last ? last.content : input[input.length - 1].content;
   }
 
-  // ── Connect request body ───────────────────────────────────
-  private buildConnectBody(prompt: string, options: KimiCallOptions): Buffer {
-    const chatId = options.chatSessionId || crypto.randomUUID();
-    const parentId = options.parentMessageId || crypto.randomUUID();
-    const model = options.model ?? this.opts.defaultModel;
-    const payload = {
-      chat_id: chatId,
-      scenario: 'SCENARIO_CHAT',
-      tools: [
-        { type: 'TOOL_TYPE_SEARCH', search: {} },
-        { type: 'TOOL_TYPE_CRON_JOB' },
-      ],
-      message: {
-        parent_id: parentId,
-        role: 'user',
-        blocks: [{ message_id: '', text: { content: prompt } }],
-        scenario: 'SCENARIO_CHAT',
-        is_goal: false,
-      },
-      options: {
-        thinking: options.thinkingEnabled ?? true,
-        enable_plugin: true,
-        reasoning_effort: 'REASONING_EFFORT_LOW',
-        model,
-      },
-      project_id: '',
-    };
-    return encodeConnectFrame(JSON.stringify(payload));
-  }
-
-  // ── Inner call (throttle + breaker wrapped in call()) ──────
-  private async callInner(
-    input: string | Array<{ role: string; content: string }>,
-    options: KimiCallOptions = {},
-  ): Promise<LlmResponse> {
-    const prompt = this.promptFromInput(input);
-    const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
-    const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
-    const bodyBuf = this.buildConnectBody(prompt, options);
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
-
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: this.buildHeaders(),
-        body: bodyBuf,
-        signal: options.signal ?? controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
+  private async callGateway(prompt: string, options: KimiCallOptions): Promise<string> {
+    if (!this.creds.has()) {
+      throw new KimiNoCredentialsError();
     }
-
-    if (!res.ok || !res.body) {
-      const text = await res.text().catch(() => '');
+    const model = options.model || GATEWAY_MODEL;
+    const r = await fetch(GATEWAY_URL + '/v1/chat/completions', {
+      method: 'POST',
+      headers: this.gatewayHeaders(),
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+      signal: options.signal,
+    });
+    const text = await r.text();
+    let j: any = null;
+    try { j = JSON.parse(text); } catch {}
+    if (!r.ok) {
       this.lastCallAt = Date.now();
       this.lastCallOk = false;
-      this.lastCallError = 'HTTP ' + res.status;
-      if (detectKimiWafSignal(res.status, text)) {
-        log.warn('kimi.completions.waf_signal', { status: res.status, preview: text.slice(0, 160) });
-        throw new KimiApiError(-1, 'WAF signal: ' + text.slice(0, 200), res.status);
-      }
-      log.warn('kimi.completions.http_error', { status: res.status, body: text.slice(0, 400) });
-      if (res.status === 401) throw new KimiExpiredSessionError('Kimi 401: ' + text.slice(0, 200));
-      if (res.status === 403) throw new KimiAuthError(res.status, text.slice(0, 200));
-      throw new KimiApiError(-1, 'HTTP ' + res.status + ': ' + text.slice(0, 300), res.status);
+      const detail =
+        (j && j.error && (j.error.message || j.error)) ||
+        text.slice(0, 300);
+      this.lastCallError = 'gateway ' + r.status + ': ' + String(detail).slice(0, 200);
+      throw new KimiApiError(-1, this.lastCallError, r.status);
     }
-
-    const state = newStreamState();
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const buf = Buffer.from(buffer, 'binary');
-      const { frames, remainder } = decodeConnectFrames(buf);
-      // Re-encode remainder for next iteration
-      buffer = remainder.toString('binary');
-      for (const frame of frames) {
-        const op = parseEventOp(frame.payload);
-        if (op) applyEventOp(op, state);
-      }
-    }
-    try { reader.releaseLock(); } catch {}
-
+    const content = (j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
     this.lastCallAt = Date.now();
     this.lastCallOk = true;
     this.lastCallError = null;
-    return {
-      code: 0,
-      msg: '',
-      data: {
-        content: state.text,
-        chat_session_id: state.chatId,
-        message_id: state.messageId,
-      },
-    };
+    return content;
   }
 
-  // ── Public call with throttle + breaker ────────────────────
   async call(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
   ): Promise<LlmResponse> {
-    const decision = this.wafBreaker.canCall();
-    if (!decision.allowed) {
-      throw new KimiApiError(-1, decision.reason || 'WAF cooldown active', 0);
-    }
-    await this.throttle.acquire();
+    const prompt = this.promptFromInput(input);
     try {
-      const result = await this.callInner(input, options);
-      this.wafBreaker.recordSuccess();
-      this.throttle.recordSuccess();
-      return result;
+      const content = await this.callGateway(prompt, options);
+      return {
+        code: 0,
+        msg: '',
+        data: { content, chat_session_id: null, message_id: null },
+      };
     } catch (e) {
+      if (e instanceof KimiNoCredentialsError || e instanceof KimiApiError) throw e;
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('WAF') || msg.includes('captcha') || msg.includes('rate limit')) {
-        this.wafBreaker.recordWafPunishment();
-        this.throttle.recordWafPunishment();
-      } else {
-        this.throttle.recordNonWafFailure();
-      }
-      throw e;
+      this.lastCallAt = Date.now();
+      this.lastCallOk = false;
+      this.lastCallError = msg;
+      throw new KimiApiError(-1, 'gateway network: ' + msg, 0);
     }
   }
 
-  // ── Streaming variant ──────────────────────────────────────
   async *stream(
     input: string | Array<{ role: string; content: string }>,
     options: KimiCallOptions = {},
   ): AsyncGenerator<LlmStreamChunk, void, unknown> {
-    const decision = this.wafBreaker.canCall();
-    if (!decision.allowed) {
-      yield { type: 'error', error: decision.reason || 'WAF cooldown active' };
-      return;
-    }
-    try { await this.throttle.acquire(); }
-    catch (e) { yield { type: 'error', error: e instanceof Error ? e.message : String(e) }; return; }
-
     try {
-      const result = await this.callInner(input, options);
-      if (result.data.content) yield { type: 'chunk', content: result.data.content };
+      const content = await this.callGateway(this.promptFromInput(input), options);
+      if (content) yield { type: 'chunk', content };
       yield { type: 'done' };
-      this.wafBreaker.recordSuccess();
-      this.throttle.recordSuccess();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes('WAF') || msg.includes('captcha')) {
-        this.wafBreaker.recordWafPunishment();
-        this.throttle.recordWafPunishment();
-      } else {
-        this.throttle.recordNonWafFailure();
-      }
-      yield { type: 'error', error: msg };
+      yield { type: 'error', error: e instanceof Error ? e.message : String(e) };
     }
   }
 
-  // ── Health + panel state ───────────────────────────────────
-  isHealthy(): boolean { return this.wafBreaker.isHealthy(); }
+  isHealthy(): boolean { return this.hasCredentials(); }
 
   async healthCheck(): Promise<LlmHealth> {
     const r = this.creds.redacted();
-    const credsPresent = r.configured && r.hasBearer;
-    const lastFailed = this.lastCallOk === false;
-    // 'healthy' must mean 'this engine can serve a request right now'.
-    // Credentials present is necessary but not sufficient — if the last
-    // call failed (Kimi's 401 signature rejection), the engine is not
-    // healthy regardless of what the credential store holds.
-    const healthy = credsPresent && !lastFailed && this.wafBreaker.isHealthy();
+    let gatewayOk = false;
+    let gatewayErr: string | null = null;
+    try {
+      const h = await fetch(GATEWAY_URL + '/health', {
+        signal: AbortSignal.timeout(3000),
+      });
+      gatewayOk = h.ok;
+    } catch (e) {
+      gatewayErr = e instanceof Error ? e.message : String(e);
+    }
     return {
       engineId: this.id,
       configured: r.configured,
-      healthy,
-      credsPresent,
-      serverAcceptsCredentials:
-        this.lastCallOk === null ? null : this.lastCallOk === true,
+      healthy: r.configured && gatewayOk && this.lastCallOk !== false,
+      gatewayUrl: GATEWAY_URL,
+      gatewayOk,
+      gatewayError: gatewayErr,
       cookiesLength: r.cookiesLength,
       hasBearer: r.hasBearer,
       hasCsrf: r.hasCsrf,
       acquiredAt: r.acquiredAt,
-      wafState: this.wafBreaker.snapshot(),
-      throttleState: this.throttle.snapshot(),
       lastCallAt: this.lastCallAt,
       lastCallOk: this.lastCallOk,
       lastCallError: this.lastCallError,
