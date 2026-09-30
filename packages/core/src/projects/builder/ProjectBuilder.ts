@@ -15,29 +15,174 @@ export interface BuildResult {
 
 interface ParsedFile { path: string; content: string; }
 
-const HEADER = [
-  'You are a code generator inside an app builder.',
-  'Every user message is a build request, even when it sounds conversational.',
-  'You do not chat. You emit code.',
-  '',
-  'MANDATORY SKILLS:',
-  'A REFERENCE SKILLS block appears below. Every pattern it defines is',
-  'REQUIRED, not optional. Before writing any file you MUST consult that',
-  'block and apply the conventions it specifies: exact class names,',
-  'exact CSS variables, exact HTML structure, exact JS patterns.',
-  'Do NOT invent your own layout, colour names, or component structure',
-  'when a skill already defines them.',
-  '',
-  'FORMAT RULES for every response:',
-  '- Output ONE JSON object. Nothing before it, nothing after it.',
-  '- No prose, no explanations, no markdown code fences.',
-  '- Shape: {"files":[{"path":"index.html","content":"<full contents>"}]}',
-  '- Always include index.html at the project root.',
-  '- Paths must be relative, no leading slash, no "..".',
-  '- Vanilla HTML/CSS/JS only. No build steps, no external bundlers.',
-  '- When editing, return the FULL contents of every file you touch.',
-  '- When adding pages, update the nav in existing pages to link to them.',
-].join('\n');
+// ─── Stack detection ────────────────────────────────────────────
+// The build prompt used to assume a static HTML site. When editing a
+// real repository (cloned from GitHub, for example) that assumption
+// produces wrong output: it inlines everything as HTML. We detect the
+// stack from the file tree and pick rules that match.
+type ProjectStack =
+  | 'static-html'
+  | 'node-ts'
+  | 'node-js'
+  | 'python'
+  | 'rust'
+  | 'go'
+  | 'ruby'
+  | 'php'
+  | 'mixed'
+  | 'unknown';
+
+interface StackRules {
+  label: string;
+  perFileContextCap: number;   // bytes of each file included in the prompt
+  perFileOutputCap: number;    // bytes the model should return for one file
+  totalOutputCap: number;      // bytes total per response
+  formatRules: string[];       // lines injected into the header
+  contextHint: string;         // line telling the model what "the project" is
+}
+
+function detectStack(files: string[]): ProjectStack {
+  const has = (name: string): boolean => files.some((f) => f === name || f.endsWith('/' + name));
+  const hasExt = (ext: string): boolean => files.some((f) => f.endsWith(ext));
+  if (has('package.json')) {
+    if (has('tsconfig.json') || hasExt('.ts') || hasExt('.tsx')) return 'node-ts';
+    return 'node-js';
+  }
+  if (has('pyproject.toml') || has('requirements.txt') || has('setup.py')) return 'python';
+  if (has('Cargo.toml')) return 'rust';
+  if (has('go.mod')) return 'go';
+  if (has('Gemfile')) return 'ruby';
+  if (has('composer.json')) return 'php';
+  if (has('index.html') || hasExt('.html')) return 'static-html';
+  if (files.length > 0) return 'mixed';
+  return 'unknown';
+}
+
+function rulesForStack(stack: ProjectStack): StackRules {
+  switch (stack) {
+    case 'static-html':
+      return {
+        label: 'Static HTML/CSS/JS site',
+        perFileContextCap: 4096,
+        perFileOutputCap: 6144,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- Vanilla HTML/CSS/JS only. No build steps, no external bundlers.',
+          '- Keep HTML in .html, CSS in .css, JS in .js.',
+          '- Split into multiple files if a single file would exceed 6 KB.',
+          '- When adding pages, update the nav in existing pages to link to them.',
+        ],
+        contextHint: 'The user is asking for a change or an addition to the site above.',
+      };
+    case 'node-ts':
+      return {
+        label: 'TypeScript / Node.js project',
+        perFileContextCap: 6144,
+        perFileOutputCap: 12_000,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- This is a TypeScript/Node.js project. Preserve the existing build tooling, imports, and file layout.',
+          '- Match the existing style: same import style, same async pattern, same error handling.',
+          '- Do not modify package.json, tsconfig.json, or lockfiles unless the user explicitly asks.',
+          '- Do not introduce new dependencies without explicit instruction.',
+          '- Prefer editing existing files over creating new ones.',
+        ],
+        contextHint: 'The user is asking for a change to the codebase above.',
+      };
+    case 'node-js':
+      return {
+        label: 'JavaScript / Node.js project',
+        perFileContextCap: 6144,
+        perFileOutputCap: 12_000,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- This is a JavaScript/Node.js project. Preserve the existing tooling and file layout.',
+          '- Match the existing style: same import/require style, same async pattern.',
+          '- Do not modify package.json or lockfiles unless the user explicitly asks.',
+          '- Do not introduce new dependencies without explicit instruction.',
+          '- Prefer editing existing files over creating new ones.',
+        ],
+        contextHint: 'The user is asking for a change to the codebase above.',
+      };
+    case 'python':
+      return {
+        label: 'Python project',
+        perFileContextCap: 6144,
+        perFileOutputCap: 12_000,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- This is a Python project. Preserve the existing module layout and imports.',
+          '- Match the existing style: type hints, async patterns, error handling.',
+          '- Do not modify pyproject.toml, requirements.txt, or setup.py unless the user explicitly asks.',
+          '- Do not introduce new dependencies without explicit instruction.',
+          '- Prefer editing existing files over creating new ones.',
+        ],
+        contextHint: 'The user is asking for a change to the codebase above.',
+      };
+    case 'rust':
+    case 'go':
+    case 'ruby':
+    case 'php':
+      return {
+        label: stack + ' project',
+        perFileContextCap: 6144,
+        perFileOutputCap: 12_000,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- Preserve the existing file layout and tooling.',
+          '- Match the existing style of the files you touch.',
+          '- Do not modify manifest or lock files unless the user explicitly asks.',
+          '- Prefer editing existing files over creating new ones.',
+        ],
+        contextHint: 'The user is asking for a change to the codebase above.',
+      };
+    case 'mixed':
+    case 'unknown':
+    default:
+      return {
+        label: 'Project (mixed or unrecognised stack)',
+        perFileContextCap: 4096,
+        perFileOutputCap: 10_000,
+        totalOutputCap: 25_000,
+        formatRules: [
+          '- Preserve the existing file layout and tooling.',
+          '- Match the existing style of the files you touch.',
+          '- Prefer editing existing files over creating new ones.',
+          '- If unsure about a change, make the smallest possible edit.',
+        ],
+        contextHint: 'The user is asking for a change to the project above.',
+      };
+  }
+}
+
+function buildHeader(stack: ProjectStack): string {
+  const rules = rulesForStack(stack);
+  return [
+    'You are a code editor inside an app builder.',
+    'Every user message is a change request, even when it sounds conversational.',
+    'You do not chat. You emit code.',
+    '',
+    'PROJECT TYPE: ' + rules.label,
+    '',
+    'MANDATORY SKILLS:',
+    'A REFERENCE SKILLS block appears below. Every pattern it defines is',
+    'REQUIRED, not optional. Before writing any file you MUST consult that',
+    'block and apply the conventions it specifies: exact class names,',
+    'exact CSS variables, exact HTML structure, exact JS patterns.',
+    'Do NOT invent your own layout, colour names, or component structure',
+    'when a skill already defines them.',
+    '',
+    ...rules.formatRules,
+    '',
+    'FORMAT RULES for every response:',
+    '- Output ONE JSON object. Nothing before it, nothing after it.',
+    '- No prose, no explanations, no markdown code fences.',
+    '- Shape: {"files":[{"path":"relative/path","content":"<full contents>"}]}',
+    '- Paths must be relative, no leading slash, no "..".',
+    '- When editing, return the FULL contents of every file you touch.',
+    '- Do not touch files the user did not ask you to change.',
+  ].join('\n');
+}
 
 const TAIL_REMINDER = [
   '',
@@ -302,6 +447,10 @@ export class ProjectBuilder {
 
     const existing = this.storage.listFiles(projectId);
     const isEdit = existing.length > 0;
+    const stack = detectStack(existing.map((f) => f.path));
+    const rules = rulesForStack(stack);
+    const header = buildHeader(stack);
+    log.info('project.build.stack_detected', { projectId, stack, isEdit, fileCount: existing.length });
 
     // Context block: on edits, include the current files. To keep the
     // input prompt small, truncate each file to its first 2 KB and mark
@@ -309,7 +458,7 @@ export class ProjectBuilder {
     // without blowing the input/output budget.
     let contextBlock = '';
     if (isEdit) {
-      const MAX_CTX_PER_FILE = 2048;
+      const MAX_CTX_PER_FILE = rules.perFileContextCap;
       const readOne = (rel: string): string => {
         try { return this.storage.readFile(projectId, rel); } catch { return ''; }
       };
@@ -344,12 +493,11 @@ export class ProjectBuilder {
         ...summary,
         '\n--- END OF CURRENT FILES ---',
         '',
-        'The user is asking for a change or an addition to the site above.',
+        rules.contextHint,
         'Return the FULL contents of every file you modify.',
         'New files are added; files you do not touch are preserved as-is.',
-        'IMPORTANT: split the output into multiple files. Do not emit',
-        'one giant file. HTML in index.html, CSS in style.css,',
-        'JS in script.js. Each file must be under 6 KB.',
+        'Keep the total response under ' + Math.round(rules.totalOutputCap / 1024) + ' KB.',
+        'If a single file would exceed ' + Math.round(rules.perFileOutputCap / 1024) + ' KB, split it into multiple files.',
       ].join('\n');
     }
 
@@ -439,7 +587,7 @@ export class ProjectBuilder {
     const enrichedContext = contextBlock + skillsBlock + attachmentNote;
 
     // ---- First attempt ----
-    let raw = await this.ask(HEADER, enrichedContext, prompt, TAIL_REMINDER);
+    let raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER);
     let parsed = extractJson(raw);
 
     // ---- One retry with an aggressive reminder ----
@@ -454,12 +602,12 @@ export class ProjectBuilder {
         '',
         '=== RETRY (previous response was cut off mid-file) ===',
         'Your last response exceeded the output limit and was truncated.',
-        'Respond again with the SAME request, but split into smaller files:',
-        '- Put CSS in style.css, JS in script.js, HTML in index.html.',
-        '- Keep each file under 8 KB.',
-        '- Do not inline large images or base64 data.',
+        'Respond again with the SAME request, but:',
+        '- Touch fewer files per response.',
+        '- Keep the total response under ' + Math.round(rules.totalOutputCap / 1024) + ' KB.',
+        '- If a file is too large to return in full, edit a different part of the codebase or break the request into multiple turns.',
       ].join('\n');
-      raw = await this.ask(HEADER, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1);
+      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1);
       parsed = extractJson(raw);
     }
 
@@ -468,7 +616,7 @@ export class ProjectBuilder {
         projectId,
         raw_preview: raw.slice(0, 200),
       });
-      raw = await this.ask(HEADER, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER);
+      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER);
       parsed = extractJson(raw);
     }
 
