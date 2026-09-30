@@ -64,9 +64,9 @@ function rulesForStack(stack: ProjectStack): StackRules {
     case 'static-html':
       return {
         label: 'Static HTML/CSS/JS site',
-        perFileContextCap: 4096,
-        perFileOutputCap: 6144,
-        totalOutputCap: 25_000,
+        perFileContextCap: 16384,
+        perFileOutputCap: 32768,
+        totalOutputCap: 120_000,
         formatRules: [
           '- Vanilla HTML/CSS/JS only. No build steps, no external bundlers.',
           '- Keep HTML in .html, CSS in .css, JS in .js.',
@@ -78,9 +78,9 @@ function rulesForStack(stack: ProjectStack): StackRules {
     case 'node-ts':
       return {
         label: 'TypeScript / Node.js project',
-        perFileContextCap: 6144,
-        perFileOutputCap: 12_000,
-        totalOutputCap: 25_000,
+        perFileContextCap: 32768,
+        perFileOutputCap: 65536,
+        totalOutputCap: 200_000,
         formatRules: [
           '- This is a TypeScript/Node.js project. Preserve the existing build tooling, imports, and file layout.',
           '- Match the existing style: same import style, same async pattern, same error handling.',
@@ -93,9 +93,9 @@ function rulesForStack(stack: ProjectStack): StackRules {
     case 'node-js':
       return {
         label: 'JavaScript / Node.js project',
-        perFileContextCap: 6144,
-        perFileOutputCap: 12_000,
-        totalOutputCap: 25_000,
+        perFileContextCap: 32768,
+        perFileOutputCap: 65536,
+        totalOutputCap: 200_000,
         formatRules: [
           '- This is a JavaScript/Node.js project. Preserve the existing tooling and file layout.',
           '- Match the existing style: same import/require style, same async pattern.',
@@ -108,9 +108,9 @@ function rulesForStack(stack: ProjectStack): StackRules {
     case 'python':
       return {
         label: 'Python project',
-        perFileContextCap: 6144,
-        perFileOutputCap: 12_000,
-        totalOutputCap: 25_000,
+        perFileContextCap: 32768,
+        perFileOutputCap: 65536,
+        totalOutputCap: 200_000,
         formatRules: [
           '- This is a Python project. Preserve the existing module layout and imports.',
           '- Match the existing style: type hints, async patterns, error handling.',
@@ -126,9 +126,9 @@ function rulesForStack(stack: ProjectStack): StackRules {
     case 'php':
       return {
         label: stack + ' project',
-        perFileContextCap: 6144,
-        perFileOutputCap: 12_000,
-        totalOutputCap: 25_000,
+        perFileContextCap: 32768,
+        perFileOutputCap: 65536,
+        totalOutputCap: 200_000,
         formatRules: [
           '- Preserve the existing file layout and tooling.',
           '- Match the existing style of the files you touch.',
@@ -161,10 +161,10 @@ function rulesForStack(stack: ProjectStack): StackRules {
 // truncates oversized messages. We cap the total context accordingly.
 function engineContextCap(engineId: string | undefined): number {
   switch (engineId) {
-    case 'engine_qwen': return 30_000;   // wspr caps qwen at 60 KB total
-    case 'engine_kimi': return 30_000;
-    case 'engine_deephad': return 30_000;
-    default: return 40_000;              // DeepSeek direct HTTP — most headroom
+    case 'engine_qwen': return 55_000;    // wspr qwen cap raised to 100k
+    case 'engine_kimi': return 55_000;
+    case 'engine_deephad': return 80_000;
+    default: return 100_000;              // DeepSeek direct HTTP
   }
 }
 
@@ -510,7 +510,7 @@ export class ProjectBuilder {
       };
       // Filter out vendor directories so the model sees only source.
       const contextFiles = existing.filter((f) => !this.shouldSkipInContext(f.path));
-      const MAX_TOTAL_CTX = engineContextCap(engineId);
+      const MAX_TOTAL_CTX = engineContextCap(engineId);   // engine-aware
       let usedBytes = 0;
       const summary: string[] = [];
       for (const f of contextFiles) {
