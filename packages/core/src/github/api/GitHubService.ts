@@ -3,6 +3,8 @@
 // to GitHub without shell access. No MCP layer — direct REST.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { log } from '../../shared/logger';
 
 export interface GitHubCredentials {
@@ -29,6 +31,41 @@ export interface PublishResult {
   branch: string;
   filesUploaded: number;
   created: boolean;
+}
+
+export interface CloneInput {
+  repoUrl: string;
+  targetDir: string;
+}
+
+export interface CloneResult {
+  targetDir: string;
+  branch: string;
+  fileCount: number;
+  bytes: number;
+  repoUrl: string;
+}
+
+export interface CommitFile {
+  path: string;
+  content: Buffer;
+}
+
+export interface CommitInput {
+  owner: string;
+  repo: string;
+  branch: string;
+  baseBranch?: string;
+  files: CommitFile[];
+  message: string;
+}
+
+export interface CommitResult {
+  branch: string;
+  commitSha: string;
+  commitUrl: string;
+  filesUploaded: number;
+  baseBranch: string;
 }
 
 const GH = 'https://api.github.com';
@@ -234,6 +271,180 @@ export class GitHubService {
   }
 
   // ── public entrypoint ───────────────────────────────────────────
+  // Mirror of ProjectBuilder's context filter. Keeps vendor dirs out
+  // of pushes so we never upload .git/, node_modules/, build artifacts.
+  private shouldSkipInCommit(rel: string): boolean {
+    const prefixes = [
+      '.git/', 'node_modules/', 'dist/', 'build/', '.next/',
+      '.expo/', '.venv/', '__pycache__/', 'coverage/', '.cache/',
+    ];
+    if (prefixes.some((p) => rel === p.slice(0, -1) || rel.startsWith(p))) return true;
+    if (rel === '.DS_Store' || rel.endsWith('/.DS_Store')) return true;
+    return false;
+  }
+
+  // ── clone an existing repo into a target directory ───────
+  // Additive: does not modify or delete anything on disk. Refuses to
+  // clone into a non-empty directory. Uses token only if configured.
+  async cloneRepo(input: CloneInput): Promise<CloneResult> {
+    const repoUrl = input.repoUrl.trim();
+    const targetDir = path.resolve(input.targetDir);
+
+    if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(?:\.git)?$/.test(repoUrl)) {
+      throw new Error('repoUrl must be https://github.com/owner/repo');
+    }
+    if (!targetDir) throw new Error('targetDir is required');
+
+    if (fs.existsSync(targetDir)) {
+      const entries = fs.readdirSync(targetDir).filter((n) => n !== '.git');
+      if (entries.length > 0) {
+        throw new Error('target directory already has files: ' + targetDir);
+      }
+    }
+
+    let cloneUrl = repoUrl;
+    if (this.creds) {
+      cloneUrl = repoUrl.replace(
+        /^https:\/\/github\.com\//,
+        'https://x-access-token:' + encodeURIComponent(this.creds.token) + '@github.com/',
+      );
+    }
+
+    const execFileAsync = promisify(execFile);
+    try {
+      await execFileAsync('git', ['clone', '--depth=1', cloneUrl, targetDir], {
+        timeout: 120_000,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (e: any) {
+      const raw = String((e && e.message) || e);
+      const safe = raw.replace(/x-access-token:[^@]+@/g, 'x-access-token:***@');
+      throw new Error('git clone failed: ' + safe);
+    }
+
+    let branch = 'main';
+    try {
+      const br = await execFileAsync('git', ['-C', targetDir, 'rev-parse', '--abbrev-ref', 'HEAD']);
+      branch = String(br.stdout).trim() || branch;
+    } catch { /* keep default */ }
+
+    let fileCount = 0;
+    let bytes = 0;
+    const walk = (dir: string): void => {
+      for (const name of fs.readdirSync(dir)) {
+        if (name === '.git') continue;
+        const full = path.join(dir, name);
+        const st = fs.statSync(full);
+        if (st.isDirectory()) walk(full);
+        else if (st.isFile()) { fileCount += 1; bytes += st.size; }
+      }
+    };
+    try { walk(targetDir); } catch { /* ignore */ }
+
+    log.info('github.clone.done', { repoUrl, targetDir, branch, fileCount, bytes });
+    return { targetDir, branch, fileCount, bytes, repoUrl };
+  }
+
+  // ── commit files to a new branch via the Git Data API ──────
+  // One atomic commit. Creates the branch if it does not exist, otherwise
+  // fast-forwards it. Never touches the base branch. Uses the same
+  // credential store as the rest of this service.
+  async commitToBranch(input: CommitInput): Promise<CommitResult> {
+    if (!this.creds) throw new Error('GitHub credentials not configured');
+
+    const { owner, repo } = input;
+    const branch = input.branch.trim();
+    const baseBranch = (input.baseBranch || 'main').trim();
+    const message = input.message.trim() || 'Update from Sovereign Factory';
+
+    if (!branch) throw new Error('branch is required');
+    if (branch === baseBranch) throw new Error('branch must differ from baseBranch');
+    if (!input.files || input.files.length === 0) throw new Error('no files to commit');
+
+    const keep = input.files.filter((f) => !this.shouldSkipInCommit(f.path));
+    if (keep.length === 0) throw new Error('all files filtered out by skip list');
+
+    const ownerRepo = owner + '/' + repo;
+
+    // 1) resolve base branch ref
+    const baseRef = await this.api('GET', '/repos/' + ownerRepo + '/git/ref/heads/' + encodeURIComponent(baseBranch));
+    if (baseRef.status !== 200 || !baseRef.json || !baseRef.json.object) {
+      throw new Error('base branch not found: ' + baseBranch);
+    }
+    const baseCommitSha: string = baseRef.json.object.sha;
+    const baseCommit = await this.api('GET', '/repos/' + ownerRepo + '/git/commits/' + baseCommitSha);
+    if (baseCommit.status !== 200 || !baseCommit.json || !baseCommit.json.tree) {
+      throw new Error('could not read base commit tree');
+    }
+    const baseTreeSha: string = baseCommit.json.tree.sha;
+
+    // 2) create blobs for every file
+    const entries: Array<{ path: string; sha: string; mode: string; type: string }> = [];
+    for (const f of keep) {
+      const blob = await this.api('POST', '/repos/' + ownerRepo + '/git/blobs', {
+        content: f.content.toString('base64'),
+        encoding: 'base64',
+      });
+      if (blob.status !== 201 || !blob.json || !blob.json.sha) {
+        throw new Error('blob create failed for ' + f.path + ': HTTP ' + blob.status);
+      }
+      entries.push({ path: f.path, sha: blob.json.sha, mode: '100644', type: 'blob' });
+    }
+
+    // 3) create tree on top of base
+    const tree = await this.api('POST', '/repos/' + ownerRepo + '/git/trees', {
+      base_tree: baseTreeSha,
+      tree: entries,
+    });
+    if (tree.status !== 201 || !tree.json || !tree.json.sha) {
+      throw new Error('tree create failed: HTTP ' + tree.status);
+    }
+    const treeSha: string = tree.json.sha;
+
+    // 4) create commit
+    const commit = await this.api('POST', '/repos/' + ownerRepo + '/git/commits', {
+      message,
+      tree: treeSha,
+      parents: [baseCommitSha],
+    });
+    if (commit.status !== 201 || !commit.json || !commit.json.sha) {
+      throw new Error('commit create failed: HTTP ' + commit.status);
+    }
+    const commitSha: string = commit.json.sha;
+
+    // 5) create or update the branch ref
+    const existing = await this.api('GET', '/repos/' + ownerRepo + '/git/ref/heads/' + encodeURIComponent(branch));
+    if (existing.status === 200) {
+      const upd = await this.api('PATCH', '/repos/' + ownerRepo + '/git/refs/heads/' + encodeURIComponent(branch), {
+        sha: commitSha,
+        force: false,
+      });
+      if (upd.status !== 200) {
+        throw new Error('branch update failed: HTTP ' + upd.status);
+      }
+    } else {
+      const create = await this.api('POST', '/repos/' + ownerRepo + '/git/refs', {
+        ref: 'refs/heads/' + branch,
+        sha: commitSha,
+      });
+      if (create.status !== 201) {
+        throw new Error('branch create failed: HTTP ' + create.status);
+      }
+    }
+
+    log.info('github.commit.done', {
+      repo: ownerRepo, branch, commitSha, files: entries.length, baseBranch,
+    });
+
+    return {
+      branch,
+      commitSha,
+      commitUrl: 'https://github.com/' + ownerRepo + '/commit/' + commitSha,
+      filesUploaded: entries.length,
+      baseBranch,
+    };
+  }
+
   async publish(input: PublishInput): Promise<PublishResult> {
     if (!this.creds) throw new Error('GitHub credentials not configured');
     const { username } = this.creds;
