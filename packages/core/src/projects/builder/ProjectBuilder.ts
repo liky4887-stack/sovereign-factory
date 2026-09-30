@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import { DeepSeekService } from '../../deepseek/api/DeepSeekService';
 import { ProjectFileStorage, StoredFile } from './ProjectFileStorage';
 import { SkillLoader, Skill } from '../../skills/SkillLoader';
+import type { LlmEngine } from '../../engines/LlmEngine';
 import { log } from '../../shared/logger';
 
 export interface BuildResult {
@@ -152,6 +153,18 @@ function rulesForStack(stack: ProjectStack): StackRules {
         ],
         contextHint: 'The user is asking for a change to the project above.',
       };
+  }
+}
+
+// Different engines accept different prompt sizes. Browser-driven engines
+// (Qwen via wspr, Kimi, DeepHat) go through a web UI that silently
+// truncates oversized messages. We cap the total context accordingly.
+function engineContextCap(engineId: string | undefined): number {
+  switch (engineId) {
+    case 'engine_qwen': return 30_000;   // wspr caps qwen at 60 KB total
+    case 'engine_kimi': return 30_000;
+    case 'engine_deephad': return 30_000;
+    default: return 40_000;              // DeepSeek direct HTTP — most headroom
   }
 }
 
@@ -353,8 +366,19 @@ export interface BuildAttachments {
   forceSkillIds?: string[];
 }
 
+export interface BuildOptions {
+  /** Optional engine id, e.g. 'engine_qwen'. Defaults to engine_deepseek. */
+  engine?: string;
+}
+
 export class ProjectBuilder {
   private sovereignPrompt: string | null = null;
+  private engineResolver: ((id: string) => LlmEngine | undefined) | null = null;
+
+  /** Injected at boot once the EngineRegistry exists. */
+  setEngineResolver(fn: (id: string) => LlmEngine | undefined): void {
+    this.engineResolver = fn;
+  }
 
   constructor(
     private readonly deepseek: DeepSeekService,
@@ -419,6 +443,7 @@ export class ProjectBuilder {
     prompt: string,
     tailText: string,
     temperature?: number,
+    engineId?: string,
   ): Promise<string> {
     const identityBlock = this.sovereignPrompt
       ? this.sovereignPrompt + '\n' + SOVEREIGN_OUTPUT_CONTRACT + '\n'
@@ -433,6 +458,21 @@ export class ProjectBuilder {
       maxTokens: 8192,
     };
     if (typeof temperature === 'number') opts.temperature = temperature;
+
+    // Route through the chosen engine when one was supplied and it is not
+    // DeepSeek. DeepSeek keeps its direct path so existing behaviour is
+    // unchanged. Any registered engine whose id is unknown falls back to
+    // DeepSeek with a warning rather than hard-failing the build.
+    if (engineId && engineId !== 'engine_deepseek' && this.engineResolver) {
+      const engine = this.engineResolver(engineId);
+      if (engine) {
+        log.info('project.build.engine_call', { engineId, promptChars: prompt.length });
+        const resp = await engine.call(composed, opts);
+        return (resp && resp.data && resp.data.content) || '';
+      }
+      log.warn('project.build.engine_not_found', { engineId, fallingBack: 'engine_deepseek' });
+    }
+
     const response = await this.deepseek.callDeepSeek(composed, opts);
     return (response && response.data && (response.data as any).content) || '';
   }
@@ -442,15 +482,21 @@ export class ProjectBuilder {
     prompt: string,
     publicBaseUrl: string,
     attachments: BuildAttachments = {},
+    options: BuildOptions = {},
   ): Promise<BuildResult> {
-    log.info('project.build.start', { projectId, prompt_preview: prompt.slice(0, 80) });
+    let engineId = options.engine && options.engine.length > 0 ? options.engine : 'engine_deepseek';
+    log.info('project.build.start', {
+      projectId,
+      engineId,
+      prompt_preview: prompt.slice(0, 80),
+    });
 
     const existing = this.storage.listFiles(projectId);
     const isEdit = existing.length > 0;
     const stack = detectStack(existing.map((f) => f.path));
     const rules = rulesForStack(stack);
     const header = buildHeader(stack);
-    log.info('project.build.stack_detected', { projectId, stack, isEdit, fileCount: existing.length });
+    log.info('project.build.stack_detected', { projectId, stack, isEdit, fileCount: existing.length, engineId, contextCap: engineContextCap(engineId) });
 
     // Context block: on edits, include the current files. To keep the
     // input prompt small, truncate each file to its first 2 KB and mark
@@ -464,7 +510,7 @@ export class ProjectBuilder {
       };
       // Filter out vendor directories so the model sees only source.
       const contextFiles = existing.filter((f) => !this.shouldSkipInContext(f.path));
-      const MAX_TOTAL_CTX = 40_000;
+      const MAX_TOTAL_CTX = engineContextCap(engineId);
       let usedBytes = 0;
       const summary: string[] = [];
       for (const f of contextFiles) {
@@ -587,8 +633,24 @@ export class ProjectBuilder {
     const enrichedContext = contextBlock + skillsBlock + attachmentNote;
 
     // ---- First attempt ----
-    let raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER);
+    let raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER, undefined, engineId);
     let parsed = extractJson(raw);
+
+    // ---- Browser-engine fallback ----
+    // DeepSeek's API honours a strict "return only JSON" contract. Browser
+    // chat UIs (Qwen via wspr, Kimi, DeepHat) frequently don't — they reply
+    // in markdown, wrap the JSON in prose, or ignore the format entirely.
+    // Rather than burn 3 retries on the same stubborn engine, rebind to
+    // DeepSeek for the retries. The log records which engine actually
+    // produced the final output.
+    if (!parsed && engineId !== 'engine_deepseek') {
+      log.warn('project.build.engine_fallback_deepseek', {
+        fromEngine: engineId,
+        reason: looksTruncated(raw) ? 'truncated' : 'unparseable',
+        rawPreview: raw.slice(0, 120),
+      });
+      engineId = 'engine_deepseek';
+    }
 
     // ---- One retry with an aggressive reminder ----
     // Detect truncation before treating as a parse failure.
@@ -607,7 +669,7 @@ export class ProjectBuilder {
         '- Keep the total response under ' + Math.round(rules.totalOutputCap / 1024) + ' KB.',
         '- If a file is too large to return in full, edit a different part of the codebase or break the request into multiple turns.',
       ].join('\n');
-      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1);
+      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1, engineId);
       parsed = extractJson(raw);
     }
 
@@ -616,7 +678,7 @@ export class ProjectBuilder {
         projectId,
         raw_preview: raw.slice(0, 200),
       });
-      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER);
+      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER, undefined, engineId);
       parsed = extractJson(raw);
     }
 
@@ -633,7 +695,7 @@ export class ProjectBuilder {
         first_char: raw.trim().charAt(0),
         last_100: raw.trim().slice(-100),
       });
-      throw new Error('DeepSeek returned JSON that failed to parse: ' + parseErr);
+      throw new Error(engineId + ' returned JSON that failed to parse: ' + parseErr);
     }
 
     const files = validateFiles(parsed.files);
@@ -648,10 +710,11 @@ export class ProjectBuilder {
     const previewUrl = publicBaseUrl.replace(/\/+$/, '') + '/projects/' +
       encodeURIComponent(projectId) + '/preview/';
 
-    const summary = isEdit
+    const summary = (isEdit
       ? 'Updated ' + written.length + ' file' + (written.length === 1 ? '' : 's') +
-        ' · ' + allFiles.length + ' total.'
-      : 'Built ' + written.length + ' file' + (written.length === 1 ? '' : 's') + '.';
+        ' \u00b7 ' + allFiles.length + ' total.'
+      : 'Built ' + written.length + ' file' + (written.length === 1 ? '' : 's') + '.')
+      + ' [' + engineId + ']';
 
     log.info('project.build.done', {
       projectId, isEdit, written: written.length, total: allFiles.length, previewUrl,

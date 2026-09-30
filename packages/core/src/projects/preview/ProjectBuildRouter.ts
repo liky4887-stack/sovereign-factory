@@ -46,7 +46,10 @@ export function createProjectBuildRouter(opts: ProjectBuildRouterOptions): Route
     }
 
     try {
-      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl, attachments);
+      const engine = typeof req.body?.engine === 'string' && req.body.engine.length > 0
+        ? req.body.engine
+        : undefined;
+      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl, attachments, { engine });
       res.json({ ok: true, result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

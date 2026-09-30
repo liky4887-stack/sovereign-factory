@@ -182,6 +182,11 @@ async function main(): Promise<void> {
     credentialsFile: deephatCredsFile,
   });
   engineRegistry.register(deephat);
+  // Give ProjectBuilder the ability to route build requests through any
+  // registered engine (not just DeepSeek). Called once here, before the
+  // HTTP bridge starts accepting requests.
+  projectBuilder.setEngineResolver((id) => engineRegistry.get(id));
+
   const twinOrchestrator = new TwinOrchestrator(
     engineRegistry,
     config.QWEN.primaryEngineId,
