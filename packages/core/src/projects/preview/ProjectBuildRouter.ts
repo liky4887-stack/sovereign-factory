@@ -12,6 +12,19 @@ export interface ProjectBuildRouterOptions {
   publicBaseUrl: string;
 }
 
+// Directories hidden from the file listing. Matches the frontend's
+// ProjectContext filter so both sides see the same view.
+const SKIP_FOR_LISTING = [
+  '.git', 'node_modules', 'dist', 'build', '.next', '.expo',
+  '.venv', '__pycache__', 'coverage', '.cache',
+];
+function isHiddenFromListing(path: string): boolean {
+  const first = path.split('/')[0];
+  if (SKIP_FOR_LISTING.includes(first)) return true;
+  if (path === '.DS_Store' || path.endsWith('/.DS_Store')) return true;
+  return false;
+}
+
 export function createProjectBuildRouter(opts: ProjectBuildRouterOptions): Router {
   const router = Router();
 
@@ -65,7 +78,9 @@ export function createProjectBuildRouter(opts: ProjectBuildRouterOptions): Route
       res.json({ ok: true, files: [] });
       return;
     }
-    res.json({ ok: true, files: opts.storage.listFiles(projectId) });
+    const all = opts.storage.listFiles(projectId);
+    const visible = all.filter((f) => !isHiddenFromListing(f.path));
+    res.json({ ok: true, files: visible });
   });
 
   // ─── GET /projects/:id/files/* ───────────────────────────────
