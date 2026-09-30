@@ -47,6 +47,8 @@ import { QwenService } from '../qwen/api/QwenService';
 import { createQwenRouter } from '../qwen/http/QwenRouter';
 import { KimiService } from '../kimi/api/KimiService';
 import { createKimiRouter } from '../kimi/http/KimiRouter';
+import { createDeepHatRouter } from '../deephat/http/DeepHatRouter';
+import { DeepHatService } from '../deephat/api/DeepHatService';
 import { EngineRegistry } from '../engines/EngineRegistry';
 import { TwinOrchestrator } from '../engines/TwinOrchestrator';
 import { createEnginesRouter } from '../engines/http/EnginesRouter';
@@ -71,6 +73,7 @@ export interface TermuxBridgeServerOptions {
   github: GitHubService;
   qwen: QwenService;
   kimi: KimiService;
+  deephat: DeepHatService;
   engineRegistry: EngineRegistry;
   twinOrchestrator: TwinOrchestrator;
 }
@@ -96,6 +99,7 @@ export class TermuxBridgeServer {
   private github: GitHubService;
   private qwen: QwenService;
   private kimi: KimiService;
+  private deephat: DeepHatService;
   private engineRegistry: EngineRegistry;
   private twinOrchestrator: TwinOrchestrator;
 
@@ -118,6 +122,7 @@ export class TermuxBridgeServer {
     this.github = opts.github;
     this.qwen = opts.qwen;
     this.kimi = opts.kimi;
+    this.deephat = opts.deephat;
     this.engineRegistry = opts.engineRegistry;
     this.twinOrchestrator = opts.twinOrchestrator;
     this.app = express();
@@ -152,6 +157,7 @@ export class TermuxBridgeServer {
     this.app.use('/skills', createSkillsRouter(this.skillLoader));
     this.app.use('/qwen', createQwenRouter(this.qwen));
     this.app.use('/kimi', createKimiRouter(this.kimi));
+    this.app.use('/deephad', createDeepHatRouter(this.deephat));
     this.app.use('/engines', createEnginesRouter(this.engineRegistry, this.twinOrchestrator));
     this.app.use(createGitHubRouter({
       github: this.github,

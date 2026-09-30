@@ -38,8 +38,6 @@ export class DeepHatService implements LlmEngine {
   setCredentials(_input: Record<string, unknown>): Record<string, unknown> {
     return { note: 'credentials managed by the DeepHat gateway' };
   }
-  clearCredentials(): void { /* no-op */ }
-
   hasCredentials(): boolean {
     const f = this.opts.credentialsFile || CREDS_FILE;
     if (!f) return false;
@@ -59,6 +57,41 @@ export class DeepHatService implements LlmEngine {
   }
 
   isHealthy(): boolean { return this.hasCredentials(); }
+
+  // ── Raw credential access (for the debug panel and CLI) ────
+  getRawCredentials(): { cookies: string; authorization: string | null; acquiredAt: number | null } | null {
+    const f = this.opts.credentialsFile || CREDS_FILE;
+    if (!f) return null;
+    try {
+      if (!fs.existsSync(f)) return null;
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      return {
+        cookies: typeof j.cookies === 'string' ? j.cookies : '',
+        authorization: typeof j.authorization === 'string' ? j.authorization : null,
+        acquiredAt: typeof j.acquiredAt === 'number' ? j.acquiredAt : null,
+      };
+    } catch { return null; }
+  }
+
+  writeCredentials(input: { cookies?: string; authorization?: string }): { cookiesLength: number; hasAuthorization: boolean } {
+    const f = this.opts.credentialsFile || CREDS_FILE;
+    if (!f) throw new Error('credentialsFile not configured');
+    const next: Record<string, unknown> = { acquiredAt: Date.now() };
+    if (typeof input.cookies === 'string') next.cookies = input.cookies;
+    if (typeof input.authorization === 'string') next.authorization = input.authorization;
+    fs.mkdirSync(require('node:path').dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+    return {
+      cookiesLength: typeof next.cookies === 'string' ? (next.cookies as string).length : 0,
+      hasAuthorization: typeof next.authorization === 'string' && (next.authorization as string).length > 0,
+    };
+  }
+
+  clearCredentials(): void {
+    const f = this.opts.credentialsFile || CREDS_FILE;
+    if (!f) return;
+    try { fs.unlinkSync(f); } catch {}
+  }
 
   async healthCheck(): Promise<LlmHealth> {
     let gatewayOk = false;

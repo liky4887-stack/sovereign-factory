@@ -264,6 +264,7 @@ async function main(): Promise<void> {
     github,
     qwen,
     kimi,
+    deephat,
     engineRegistry,
     twinOrchestrator,
   });
