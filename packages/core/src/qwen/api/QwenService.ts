@@ -453,6 +453,10 @@ export class QwenService implements LlmEngine {
     input: string | Array<{ role: string; content: string }>,
     options: QwenCallOptions = {},
   ): Promise<LlmResponse> {
+    const wsprUrl = process.env.QWEN_WSPR_URL;
+    if (wsprUrl) {
+      return await this.callViaLlmWhisperer(wsprUrl, input, options);
+    }
     const prompt = this.promptFromInput(input);
     const model = options.model ?? this.opts.defaultModel;
 
@@ -589,6 +593,48 @@ export class QwenService implements LlmEngine {
         chat_session_id: chatId,
         message_id: state.parentId,
       },
+    };
+  }
+
+  private async callViaLlmWhisperer(
+    wsprBase: string,
+    input: string | Array<{ role: string; content: string }>,
+    options: QwenCallOptions = {},
+  ): Promise<LlmResponse> {
+    const base = wsprBase.endsWith('/') ? wsprBase.slice(0, -1) : wsprBase;
+    const messages = typeof input === 'string'
+      ? [{ role: 'user', content: input }]
+      : input.map((m) => ({ role: m.role, content: m.content }));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 120_000);
+    let res: Response;
+    try {
+      res = await fetch(base + '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'qwen', messages }),
+        signal: options.signal ?? controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      this.lastCallAt = Date.now();
+      this.lastCallOk = false;
+      this.lastCallError = 'wspr HTTP ' + res.status;
+      throw new QwenApiError(-1, 'wspr HTTP ' + res.status + ': ' + text.slice(0, 300), res.status);
+    }
+    const json: any = await res.json().catch(() => ({}));
+    const content = json?.choices?.[0]?.message?.content ?? '';
+    const messageId = typeof json?.id === 'string' ? json.id : null;
+    this.lastCallAt = Date.now();
+    this.lastCallOk = true;
+    this.lastCallError = null;
+    return {
+      code: 0,
+      msg: '',
+      data: { content, chat_session_id: null, message_id: messageId },
     };
   }
 
