@@ -606,7 +606,7 @@ export class QwenService implements LlmEngine {
       ? [{ role: 'user', content: input }]
       : input.map((m) => ({ role: m.role, content: m.content }));
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120_000);
+    const timer = setTimeout(() => controller.abort(), 300_000);
     let res: Response;
     try {
       res = await fetch(base + '/v1/chat/completions', {
