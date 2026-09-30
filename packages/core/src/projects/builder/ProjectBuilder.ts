@@ -219,6 +219,28 @@ export class ProjectBuilder {
     this.loadSovereignPrompt();
   }
 
+  // Directories and files that should never appear in the model's
+  // context view of an existing project. Cloned repos carry .git/,
+  // node_modules/, dist/, etc. — none of it is useful to the model,
+  // and including it blows the per-file context budget on junk.
+  private shouldSkipInContext(rel: string): boolean {
+    const prefixes = [
+      '.git/',
+      'node_modules/',
+      'dist/',
+      'build/',
+      '.next/',
+      '.expo/',
+      '.venv/',
+      '__pycache__/',
+      'coverage/',
+      '.cache/',
+    ];
+    if (prefixes.some((p) => rel === p.slice(0, -1) || rel.startsWith(p))) return true;
+    if (rel === '.DS_Store' || rel.endsWith('/.DS_Store')) return true;
+    return false;
+  }
+
   private loadSovereignPrompt(): void {
     const candidates = [
       process.env.SOVEREIGN_PROMPT_FILE,
@@ -291,16 +313,31 @@ export class ProjectBuilder {
       const readOne = (rel: string): string => {
         try { return this.storage.readFile(projectId, rel); } catch { return ''; }
       };
-      const summary = existing.map((f) => {
-        const raw = readOne(f.path);
-        if (raw.length <= MAX_CTX_PER_FILE) {
-          return '\n--- ' + f.path + ' (' + raw.length + ' bytes) ---\n' + raw;
+      // Filter out vendor directories so the model sees only source.
+      const contextFiles = existing.filter((f) => !this.shouldSkipInContext(f.path));
+      const MAX_TOTAL_CTX = 40_000;
+      let usedBytes = 0;
+      const summary: string[] = [];
+      for (const f of contextFiles) {
+        if (usedBytes >= MAX_TOTAL_CTX) {
+          summary.push('\n\u2026(' + (contextFiles.length - summary.length)
+            + ' more file(s) omitted for context budget)');
+          break;
         }
-        return '\n--- ' + f.path + ' (' + raw.length + ' bytes, truncated to '
-          + MAX_CTX_PER_FILE + ') ---\n'
-          + raw.slice(0, MAX_CTX_PER_FILE)
-          + '\n…(' + (raw.length - MAX_CTX_PER_FILE) + ' more bytes omitted)';
-      });
+        const raw = readOne(f.path);
+        const remaining = MAX_TOTAL_CTX - usedBytes;
+        if (raw.length <= MAX_CTX_PER_FILE && raw.length <= remaining) {
+          summary.push('\n--- ' + f.path + ' (' + raw.length + ' bytes) ---\n' + raw);
+          usedBytes += raw.length;
+        } else {
+          const cap = Math.min(MAX_CTX_PER_FILE, remaining);
+          summary.push('\n--- ' + f.path + ' (' + raw.length + ' bytes, truncated to '
+            + cap + ') ---\n'
+            + raw.slice(0, cap)
+            + '\n…(' + (raw.length - cap) + ' more bytes omitted)');
+          usedBytes += cap;
+        }
+      }
       contextBlock = [
         '',
         '=== CURRENT PROJECT FILES (truncated view) ===',
