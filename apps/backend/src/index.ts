@@ -56,6 +56,7 @@ import { QwenService } from '../../../packages/core/src/qwen/api/QwenService';
 import { QwenCredentialStore } from '../../../packages/core/src/qwen/storage/QwenCredentialStore';
 import { KimiService } from '../../../packages/core/src/kimi/api/KimiService';
 import { KimiCredentialStore } from '../../../packages/core/src/kimi/storage/KimiCredentialStore';
+import { DeepHatService } from '../../../packages/core/src/deephat/api/DeepHatService';
 import { EngineRegistry } from '../../../packages/core/src/engines/EngineRegistry';
 import { TwinOrchestrator } from '../../../packages/core/src/engines/TwinOrchestrator';
 import { ENGINE_IDS } from '../../../packages/core/src/engines/LlmEngine';
@@ -171,6 +172,16 @@ async function main(): Promise<void> {
     defaultShieldData: config.KIMI.defaultShieldData,
   });
   engineRegistry.register(kimi);
+
+  // ─── DeepHat engine (cookie gateway on 8089) ───────────────
+  const deephatCredsFile = process.env.DEEPHAT_CREDS_FILE
+    || (process.env.HOME ? process.env.HOME + '/cookies/deephat-creds.json' : '');
+  const deephat = new DeepHatService({
+    baseUrl: process.env.DEEPHAT_GATEWAY_URL || 'http://127.0.0.1:8089',
+    requestTimeoutMs: 300_000,
+    credentialsFile: deephatCredsFile,
+  });
+  engineRegistry.register(deephat);
   const twinOrchestrator = new TwinOrchestrator(
     engineRegistry,
     config.QWEN.primaryEngineId,

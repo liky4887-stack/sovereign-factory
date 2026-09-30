@@ -60,3 +60,6 @@ Thumbs.db
 # ─── Termux ───────────────────────────────────────────────────
 .tmp/
 *.deb
+
+# Patch backups — never commit these
+*.before-*
