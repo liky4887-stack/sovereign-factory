@@ -369,6 +369,13 @@ export interface BuildAttachments {
 export interface BuildOptions {
   /** Optional engine id, e.g. 'engine_qwen'. Defaults to engine_deepseek. */
   engine?: string;
+  /**
+   * Optional pre-built skills block from the client. When present and
+   * non-empty, this replaces the builder's own top-3 loader. The client
+   * runs a larger, curated composite (11 skills) that the backend's
+   * keyword matcher cannot reproduce.
+   */
+  skillsBlock?: string;
 }
 
 export class ProjectBuilder {
@@ -628,8 +635,23 @@ export class ProjectBuilder {
       attachmentNote += '\n=== END REFERENCE DESIGN ===\n';
     }
 
-    // Load reference skills and inject the most relevant ones.
-    const skillsBlock = await this.buildSkillsBlock(prompt, attachments.forceSkillIds);
+    // Reference skills: prefer a block supplied by the caller (the app
+    // frontend ships a curated 11-skill composite), and fall back to the
+    // internal keyword matcher only when none was provided.
+    const MAX_SKILLS_BYTES = 200_000;
+    const clientSkills = options.skillsBlock && options.skillsBlock.length > 0
+      ? options.skillsBlock.slice(0, MAX_SKILLS_BYTES)
+      : null;
+    const skillsBlock = clientSkills
+      ? clientSkills
+      : await this.buildSkillsBlock(prompt, attachments.forceSkillIds);
+    if (clientSkills) {
+      log.info('project.build.skills_from_client', {
+        projectId,
+        bytes: clientSkills.length,
+        truncated: options.skillsBlock!.length > MAX_SKILLS_BYTES,
+      });
+    }
     const enrichedContext = contextBlock + skillsBlock + attachmentNote;
 
     // ---- First attempt ----

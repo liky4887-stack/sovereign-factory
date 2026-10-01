@@ -62,7 +62,18 @@ export function createProjectBuildRouter(opts: ProjectBuildRouterOptions): Route
       const engine = typeof req.body?.engine === 'string' && req.body.engine.length > 0
         ? req.body.engine
         : undefined;
-      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl, attachments, { engine });
+      // Client-supplied skills block. When present, replaces the builder's
+      // internal top-3 loader. Capped at 200 KB; anything larger is
+      // treated as malformed and ignored so a bad client can't blow the
+      // prompt budget.
+      const rawSkills = req.body?.skillsBlock;
+      const skillsBlock = typeof rawSkills === 'string' && rawSkills.length > 0 && rawSkills.length <= 200_000
+        ? rawSkills
+        : undefined;
+      if (typeof rawSkills === 'string' && rawSkills.length > 200_000) {
+        log.warn('project.build.skills_block_rejected', { projectId, bytes: rawSkills.length });
+      }
+      const result = await opts.builder.build(projectId, prompt.trim(), opts.publicBaseUrl, attachments, { engine, skillsBlock });
       res.json({ ok: true, result });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
