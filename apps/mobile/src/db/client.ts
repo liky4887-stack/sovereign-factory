@@ -9,6 +9,10 @@ export async function getDatabase(): Promise<SQLite.SQLiteDatabase> {
   return dbInstance;
 }
 
+export async function getDb(): Promise<SQLite.SQLiteDatabase> {
+  return getDatabase();
+}
+
 export async function safeExecAsync(query: string, params: any[] = []) {
   const db = await getDatabase();
   if (!db) {
