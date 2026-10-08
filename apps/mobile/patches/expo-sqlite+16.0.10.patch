@@ -1,0 +1,14 @@
+diff --git a/node_modules/expo-sqlite/src/SQLiteDatabase.ts b/node_modules/expo-sqlite/src/SQLiteDatabase.ts
+index f993243..d2e1fe7 100644
+--- a/node_modules/expo-sqlite/src/SQLiteDatabase.ts
++++ b/node_modules/expo-sqlite/src/SQLiteDatabase.ts
+@@ -47,6 +47,9 @@ export class SQLiteDatabase {
+    * @param source A string containing all the SQL queries.
+    */
+   public execAsync(source: string): Promise<void> {
++    if (!this.nativeDatabase) {
++      throw new Error("[SQLiteDatabase] Critical: nativeDatabase instance is null or uninitialized.");
++    }
+     return this.nativeDatabase.execAsync(source);
+   }
+ 

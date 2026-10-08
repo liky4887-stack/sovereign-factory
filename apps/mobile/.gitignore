@@ -1,0 +1,66 @@
+# dependencies
+node_modules/
+
+# expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# native
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macos
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+.env
+
+# typescript
+*.tsbuildinfo
+
+# native build artifacts
+*.keystore
+*.cer
+*.der
+*.p7b
+google-services.json
+GoogleService-Info.plist
+android/.gradle/
+android/app/build/
+ios/Pods/
+ios/build/
+.env.production
+.env.staging
+
+# sovereign-factory backend
+server/node_modules/
+server/.env
+cookies/
+deepseek-creds.json
+
+# sqlite local state (per-device)
+modkit.db
+modkit-v2.db
+modkit*.db-wal
+modkit*.db-shm
+modkit*.db-journal
+
+# local scratch
+*.tmp
+/tmp/
