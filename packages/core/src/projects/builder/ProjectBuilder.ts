@@ -6,6 +6,7 @@ import { ProjectFileStorage, StoredFile } from './ProjectFileStorage';
 import { SkillLoader, Skill } from '../../skills/SkillLoader';
 import type { LlmEngine } from '../../engines/LlmEngine';
 import { log } from '../../shared/logger';
+import { imageTo3D } from '../../forge/ForgeService';
 
 export interface BuildResult {
   projectId: string;
@@ -33,6 +34,69 @@ type ProjectStack =
   | 'mixed'
   | 'unknown';
 
+export interface ManifestEntry {
+  path: string;
+  role: string;
+  estimated_kb: number;
+  depends_on: string[];
+}
+
+/** Strip markdown code fences the model sometimes adds around file output. */
+function stripFileFences(raw: string): string {
+  let text = raw.trim();
+  // Strip a single outer code fence if present (``` or ```lang).
+  const fence = text.match(/^```[a-zA-Z0-9]*\s*\n([\s\S]*?)\n?```\s*$/);
+  if (fence && fence[1]) return fence[1];
+  // ```html at start only
+  if (text.startsWith('```')) {
+    text = text.replace(/^```[a-zA-Z0-9]*\s*\n?/, '');
+    text = text.replace(/\n?```\s*$/, '');
+  }
+  return text;
+}
+
+/** Extract the first balanced JSON array of {path,...} objects from text. */
+function parseManifestArray(raw: string): ManifestEntry[] | null {
+  if (!raw) return null;
+  const start = raw.indexOf('[');
+  if (start === -1) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (c === '\\') { esc = true; continue; }
+      if (c === '"') { inStr = false; }
+      continue;
+    }
+    if (c === '"') { inStr = true; continue; }
+    if (c === '[') depth++;
+    else if (c === ']') {
+      depth--;
+      if (depth === 0) {
+        const candidate = raw.slice(start, i + 1);
+        let parsed: any = null;
+        try { parsed = JSON.parse(candidate); } catch {}
+        if (!parsed) { try { parsed = JSON.parse(sanitizeJson(candidate)); } catch {} }
+        if (Array.isArray(parsed)) {
+          return parsed
+            .filter((x: any) => x && typeof x.path === 'string')
+            .map((x: any) => ({
+              path: String(x.path),
+              role: typeof x.role === 'string' ? x.role : 'file',
+              estimated_kb: typeof x.estimated_kb === 'number' ? x.estimated_kb : 8,
+              depends_on: Array.isArray(x.depends_on) ? x.depends_on.map(String) : [],
+            }));
+        }
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
 interface StackRules {
   label: string;
   perFileContextCap: number;   // bytes of each file included in the prompt
@@ -55,8 +119,13 @@ function detectStack(files: string[]): ProjectStack {
   if (has('Gemfile')) return 'ruby';
   if (has('composer.json')) return 'php';
   if (has('index.html') || hasExt('.html')) return 'static-html';
-  if (files.length > 0) return 'mixed';
-  return 'unknown';
+  // Empty project: treat as a fresh static site. This is what the
+  // build endpoint is called for on Home — creating a new website
+  // from nothing. The 'unknown' bucket's 10 KB per-file cap causes
+  // the model to self-split into multiple responses and only write
+  // the first file (e.g. index.html without styles.css).
+  if (files.length === 0) return 'static-html';
+  return 'mixed';
 }
 
 function rulesForStack(stack: ProjectStack): StackRules {
@@ -65,13 +134,20 @@ function rulesForStack(stack: ProjectStack): StackRules {
       return {
         label: 'Static HTML/CSS/JS site',
         perFileContextCap: 16384,
-        perFileOutputCap: 32768,
+        perFileOutputCap: 10240,   // 10 KB — forces the model to split, not inline
         totalOutputCap: 120_000,
         formatRules: [
           '- Vanilla HTML/CSS/JS only. No build steps, no external bundlers.',
-          '- Keep HTML in .html, CSS in .css, JS in .js.',
-          '- Split into multiple files if a single file would exceed 6 KB.',
-          '- When adding pages, update the nav in existing pages to link to them.',
+          '- CRITICAL FILE STRUCTURE (the build fails if violated):',
+          '  * Every page is index.html + styles.css + script.js.',
+          '  * ALL CSS goes in styles.css, linked via <link rel="stylesheet" href="styles.css">.',
+          '  * ALL JS goes in script.js, loaded via <script src="script.js" defer>.',
+          '  * NEVER inline more than 1 KB of CSS inside a <style> tag.',
+          '  * NEVER inline more than 1 KB of JS inside a <script> tag.',
+          '- Keep index.html under 8 KB. If content exceeds that, split into multiple',
+          '  .html pages (about.html, pricing.html) linked from the nav.',
+          '- Keep styles.css under 12 KB. If larger, split into base.css + page CSS.',
+          '- When adding pages, update the nav in every existing .html file.',
         ],
         contextHint: 'The user is asking for a change or an addition to the site above.',
       };
@@ -378,6 +454,13 @@ export interface BuildOptions {
   skillsBlock?: string;
 }
 
+interface AskResult {
+  text: string;
+  /** DeepSeek chat session id — set only for the direct DeepSeek path. */
+  sessionId: string | null;
+  engineId: string;
+}
+
 export class ProjectBuilder {
   private sovereignPrompt: string | null = null;
   private engineResolver: ((id: string) => LlmEngine | undefined) | null = null;
@@ -451,7 +534,7 @@ export class ProjectBuilder {
     tailText: string,
     temperature?: number,
     engineId?: string,
-  ): Promise<string> {
+  ): Promise<AskResult> {
     const identityBlock = this.sovereignPrompt
       ? this.sovereignPrompt + '\n' + SOVEREIGN_OUTPUT_CONTRACT + '\n'
       : '';
@@ -475,13 +558,454 @@ export class ProjectBuilder {
       if (engine) {
         log.info('project.build.engine_call', { engineId, promptChars: prompt.length });
         const resp = await engine.call(composed, opts);
-        return (resp && resp.data && resp.data.content) || '';
+        return {
+          text: (resp && resp.data && resp.data.content) || '',
+          sessionId: null,
+          engineId,
+        };
       }
       log.warn('project.build.engine_not_found', { engineId, fallingBack: 'engine_deepseek' });
     }
 
     const response = await this.deepseek.callDeepSeek(composed, opts);
-    return (response && response.data && (response.data as any).content) || '';
+    const content = (response && response.data && (response.data as any).content) || '';
+    return { text: content, sessionId: null, engineId: 'engine_deepseek' };
+  }
+
+  /**
+   * Heal a truncated response by asking the model to continue from where
+   * it stopped. The partial response is embedded in the prompt so the
+   * model sees its own work — this does NOT rely on session IDs, which
+   * the DeepSeek web bridge does not preserve across calls.
+   *
+   * Returns the accumulated text. May equal the input if healing was
+   * not possible.
+   */
+  /**
+   * Route an LLM call through the engine the user picked. Falls back to
+   * DeepSeek when the resolver is missing, the engine is unknown, or the
+   * chosen engine throws. Same return shape as the DeepSeek path, so
+   * callers don't care which engine actually answered.
+   */
+  private async callEngine(
+    prompt: string,
+    opts: any,
+    engineId: string,
+  ): Promise<{ text: string; engineUsed: string }> {
+    if (engineId && engineId !== 'engine_deepseek' && this.engineResolver) {
+      const engine = this.engineResolver(engineId);
+      if (engine) {
+        try {
+          log.info('project.build.engine_route', {
+            engineId,
+            promptChars: prompt.length,
+          });
+          const resp: any = await engine.call(prompt, opts);
+          const text = (resp && resp.data && resp.data.content) || '';
+          if (text) return { text, engineUsed: engineId };
+          log.warn('project.build.engine_empty', { engineId });
+        } catch (e) {
+          log.warn('project.build.engine_threw', {
+            engineId,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      } else {
+        log.warn('project.build.engine_not_registered', { engineId });
+      }
+    }
+    const response = await this.deepseek.callDeepSeek(prompt, opts);
+    const text = (response && response.data && (response.data as any).content) || '';
+    return { text, engineUsed: 'engine_deepseek' };
+  }
+
+  private async healIfTruncated(partial: string, projectId: string, engineId: string): Promise<string> {
+    const MAX_ROUNDS = 8;
+    const TAIL_BYTES = 8000;
+    const MIN_OVERLAP = 20;
+    const MAX_OVERLAP = 500;
+
+    if (!looksTruncated(partial)) return partial;
+
+    let accumulated = partial;
+    let rounds = 0;
+
+    while (rounds < MAX_ROUNDS) {
+      if (!looksTruncated(accumulated)) break;
+      rounds += 1;
+
+      const tail = accumulated.length > TAIL_BYTES
+        ? accumulated.slice(-TAIL_BYTES)
+        : accumulated;
+
+      const continuationPrompt = [
+        'Your previous response was cut off before it finished. Continue it.',
+        '',
+        '=== END OF YOUR PARTIAL RESPONSE (last ' +
+          Math.round(tail.length / 1024) + ' KB) ===',
+        tail,
+        '=== END OF PARTIAL ===',
+        '',
+        'Continue from the EXACT character after the last one shown above.',
+        'Do NOT repeat any content already written.',
+        'Do NOT add prose, markdown fences, greetings, or commentary.',
+        'Emit ONLY the next characters needed to complete the output.',
+        'If you were inside a JSON string value, continue that string.',
+        'If you were between values, emit the closing syntax.',
+      ].join('\n');
+
+      const opts: any = {
+        thinkingEnabled: false,
+        searchEnabled: false,
+        maxTokens: 8192,
+      };
+
+      let chunk = '';
+      try {
+        const r = await this.callEngine(continuationPrompt, opts, engineId);
+        chunk = r.text;
+      } catch (e) {
+        log.warn('project.build.heal_call_failed', {
+          projectId,
+          round: rounds,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        break;
+      }
+      if (!chunk) {
+        log.warn('project.build.heal_empty', { projectId, round: rounds });
+        break;
+      }
+
+      // Trim repeated suffix-prefix overlap. Models often repeat a few
+      // characters of the tail before continuing.
+      const maxLen = Math.min(MAX_OVERLAP, accumulated.length, chunk.length);
+      for (let len = maxLen; len >= MIN_OVERLAP; len--) {
+        if (accumulated.slice(-len) === chunk.slice(0, len)) {
+          chunk = chunk.slice(len);
+          break;
+        }
+      }
+
+      accumulated += chunk;
+
+      log.info('project.build.healed', {
+        projectId,
+        round: rounds,
+        addedBytes: chunk.length,
+        accumulatedBytes: accumulated.length,
+        stillTruncated: looksTruncated(accumulated),
+      });
+    }
+
+    return accumulated;
+  }
+
+  /**
+   * Ask the model for a FILE MANIFEST — just paths and rough sizes.
+   * Response is small (~500 bytes), so it never hits the 25 KB output
+   * wall. This is step 1 of the per-file build pipeline: plan first,
+   * then generate file by file.
+   */
+  private async generateProjectManifest(
+    prompt: string,
+    stack: ProjectStack,
+    image3D: { glbUrl: string } | null | undefined,
+    engineId: string,
+    isEdit: boolean,
+  ): Promise<ManifestEntry[] | null> {
+    const rules = rulesForStack(stack);
+    const parts: string[] = [
+      'PLAN MODE. Do not write code. Produce a FILE MANIFEST.',
+      '',
+    ];
+    if (image3D) {
+      parts.push(
+        '=== 3D MODEL AVAILABLE ===',
+        'A 3D model has been generated from the user image.',
+        'URL: ' + image3D.glbUrl,
+        '',
+        'You MUST plan a page whose HERO is this 3D model.',
+        'Required files:',
+        '  - index.html  (must contain <canvas id="scene-canvas"></canvas>)',
+        '  - styles.css  (page styles)',
+        '  - scene.js    (Three.js scene that loads and animates the GLB)',
+        '  - script.js   (page interactions)',
+        '',
+        'scene.js MUST:',
+        '  - import * as THREE from a CDN and GLTFLoader from three/examples',
+        '  - load the GLB from the URL above',
+        '  - set up ambient + directional + rim lighting',
+        '  - rotate the model via requestAnimationFrame based on cursor',
+        '  - handle prefers-reduced-motion (static pose)',
+        '  - handle window resize',
+        '=== END 3D MODEL ===',
+        '',
+      );
+    }
+    if (isEdit) {
+      parts.push(
+        '=== EDIT MODE ===',
+        'This is an EXISTING project. You are NOT creating a new one.',
+        'Plan ONLY the files that MUST change to fulfil the request.',
+        'Do NOT re-plan the whole project.',
+        'Do NOT list files that will not be touched.',
+        'Hard cap: 8 files. Prefer 2-4.',
+        '=== END EDIT MODE ===',
+        '',
+      );
+    }
+    parts.push(
+      'PROJECT REQUEST: ' + prompt,
+      'PROJECT TYPE: ' + rules.label,
+      '',
+      'Output ONLY a JSON array. Nothing before or after it.',
+      'Shape: [{"path":"index.html","role":"page","estimated_kb":8,"depends_on":[]}]',
+      '',
+      'Rules:',
+      '- Each file estimated 5-15 KB. If a file would exceed 15 KB, split it.',
+      '- For a static site: index.html + styles.css + script.js minimum.',
+      '- depends_on lists relative paths this file references.',
+      '- Keep total under 60 KB.',
+      '- No prose. No markdown fences. Only the JSON array.',
+    );
+    const manifestPrompt = parts.join('\n');
+
+    try {
+      const r = await this.callEngine(manifestPrompt, {
+        thinkingEnabled: false,
+        searchEnabled: false,
+        maxTokens: 2048,
+      }, engineId);
+      return parseManifestArray(r.text);
+    } catch (e) {
+      log.warn('project.build.manifest_call_failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Per-file generation path. One DeepSeek call per manifest entry.
+   * Each response is 8-15 KB raw file content — under the 25 KB wall.
+   * Files are written to disk as soon as they arrive.
+   */
+  private async buildPerFile(
+    projectId: string,
+    prompt: string,
+    manifest: ManifestEntry[],
+    contextBlock: string,
+    skillsBlock: string,
+    engineId: string,
+    isEdit: boolean,
+  ): Promise<ParsedFile[] | null> {
+    const written: ParsedFile[] = [];
+
+    for (let i = 0; i < manifest.length; i++) {
+      const entry = manifest[i];
+      const step = (i + 1) + '/' + manifest.length;
+
+      // Context for this call: contents of files this file depends on,
+      // so class names / IDs / interfaces match. Falls back to including
+      // index.html for any non-HTML file so CSS and JS see the markup.
+      const MAX_DEP_BYTES = 40000;
+      const depPaths = new Set<string>(entry.depends_on);
+      if (!entry.path.endsWith('.html') && !depPaths.has('index.html')) {
+        depPaths.add('index.html');
+      }
+      const depBlocks: string[] = [];
+      let depBudget = MAX_DEP_BYTES;
+      for (const w of written) {
+        if (!depPaths.has(w.path)) continue;
+        if (depBudget <= 0) break;
+        const chunk = w.content.length > depBudget
+          ? w.content.slice(0, depBudget) + '\n…(truncated for prompt budget)'
+          : w.content;
+        depBlocks.push('=== ' + w.path + ' (' + w.content.length + ' bytes) ===\n' + chunk);
+        depBudget -= chunk.length;
+      }
+      const writtenSummary = written
+        .map((f) => '--- ' + f.path + ' (' + f.content.length + ' bytes) ---')
+        .join('\n');
+      const depContent = depBlocks.length > 0
+        ? '\n=== FULL CONTENT OF FILES YOU MUST MATCH ===\n' + depBlocks.join('\n\n')
+        : '';
+
+      const isInteraction = entry.role === 'interaction' ||
+        /(^|\/)script(-[a-z0-9-]+)?\.js$/.test(entry.path);
+      const is3DScene = entry.role === '3d-scene' ||
+        /(^|\/)scene(-[a-z0-9-]+)?\.(js|ts)$/.test(entry.path);
+      const isStyles = entry.role === 'style' || /\.css$/.test(entry.path);
+      const isPage = entry.role === 'page' || /\.html$/.test(entry.path);
+
+      const requirements: string[] = [];
+
+      if (isInteraction) {
+        requirements.push(
+          '=== MANDATORY LIBRARIES FOR THIS FILE ===',
+          'You MUST use Motion 12 via CDN. No alternatives. No vanilla-only.',
+          '',
+          'Required import at the top of this file:',
+          '  import { animate, inView, stagger, scroll } from "https://cdn.jsdelivr.net/npm/motion@12/+esm";',
+          '',
+          'Required animations (all implemented with Motion, not raw CSS keyframes):',
+          '- Hero entrance on DOMContentLoaded: stagger the h1, subtext, and CTA',
+          '  with a 60ms cascade, easeOut, 500ms duration.',
+          '- Every section with class "reveal" or "animate-in" MUST reveal on',
+          '  scroll using Motion\'s inView() with { once: true, amount: 0.2 }.',
+          '- Primary buttons: scale to 0.97 on pointerdown, back on pointerup.',
+          '- Wrap everything in prefers-reduced-motion check. If user has it set,',
+          '  skip all transforms and only run opacity.',
+          '',
+          'Do NOT use window.addEventListener("scroll") for reveals.',
+          'Do NOT use raw CSS @keyframes for reveal animations.',
+          'Do NOT write plain ES2019 with "no dependencies". Motion is required.',
+          '',
+        );
+      }
+
+      if (is3DScene) {
+        requirements.push(
+          '=== MANDATORY 3D LIBRARY FOR THIS FILE ===',
+          'You MUST use Three.js via CDN. Load the model from the 3D MODEL',
+          'URL provided in the skills block above.',
+          '',
+          'Required imports:',
+          '  import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js";',
+          '  import { GLTFLoader } from "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/loaders/GLTFLoader.js";',
+          '  import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/controls/OrbitControls.js";',
+          '',
+          'Required features:',
+          '- Load the GLB from the 3D MODEL URL provided above via GLTFLoader.',
+          '- Set up scene, PerspectiveCamera, WebGLRenderer with alpha:true and',
+          '  antialias:true. Append the renderer canvas to #scene-canvas.',
+          '- Lighting: HemisphereLight + DirectionalLight + rim DirectionalLight.',
+          '- Auto-rotate the model slowly, then tilt toward cursor X/Y using',
+          '  damped lerp. Never read state from React; use raw requestAnimationFrame.',
+          '- Handle window resize.',
+          '- If prefers-reduced-motion is set, skip rotation and show static pose.',
+          '- Handle the case where the GLB fails to load: show a CSS fallback.',
+          '',
+        );
+      }
+
+      if (isStyles) {
+        requirements.push(
+          '=== CSS REQUIREMENTS ===',
+          '- :root with semantic CSS custom properties for --color-*, --space-*,',
+          '  --radius-*, --font-*. No raw hex values except in the :root block.',
+          '- @media (prefers-reduced-motion: reduce) block that disables all',
+          '  transitions and animations.',
+          '- clamp() for all display typography (h1, h2, display classes).',
+          '- transform/opacity only in transitions. Never transition width/height.',
+          '',
+        );
+      }
+
+      if (isPage) {
+        requirements.push(
+          '=== HTML REQUIREMENTS ===',
+          '- Semantic landmarks: <header>, <main>, <footer>.',
+          '- Every section has an aria-label or a heading.',
+          '- Decorative elements have aria-hidden="true".',
+          '- Include the Motion module script tag:',
+          '  <script type="module" src="script.js"></script>',
+          '- If this page has a 3D model, include <canvas id="scene-canvas"></canvas>',
+          '  in the hero section AND <script type="module" src="scene.js"></script>.',
+          '',
+        );
+      }
+
+      // On edits, fetch the current content of the file being modified
+      // so the model edits what's there instead of inventing a new file.
+      let existingContent = '';
+      if (isEdit) {
+        try {
+          const cur = this.storage.readFile(projectId, entry.path);
+          if (cur && cur.length > 0) {
+            const cap = cur.length > 20000
+              ? cur.slice(0, 20000) + '\n…(truncated for prompt budget)'
+              : cur;
+            existingContent = '=== CURRENT CONTENT OF ' + entry.path +
+              ' — EDIT THIS, KEEP STYLES/CLASSES ===\n' + cap +
+              '\n=== END CURRENT CONTENT ===\n';
+          }
+        } catch { /* new file — leave empty */ }
+      }
+
+      const filePrompt = [
+        'Write ONE FILE. Output ONLY the raw file contents.',
+        'No JSON, no code fences, no prose, no explanations, no greetings.',
+        'Start your response with the first character of the file.',
+        'End your response with the last character of the file.',
+        existingContent,
+        '',
+        'PROJECT REQUEST: ' + prompt,
+        'FILE TO WRITE NOW: ' + entry.path,
+        'ROLE: ' + entry.role,
+        'TARGET SIZE: ' + entry.estimated_kb + ' KB',
+        entry.depends_on.length > 0
+          ? 'DEPENDS ON (must match these interfaces): ' + entry.depends_on.join(', ')
+          : '',
+        '',
+        'FILES ALREADY WRITTEN (paths only):',
+        writtenSummary || '(none yet)',
+        depContent,
+        '',
+        'CRITICAL: use the exact same class names, IDs, and file paths as',
+        'the files above. Do NOT invent new class names. Do NOT rename.',
+        'Your output must be drop-in compatible with what already exists.',
+        '',
+        ...requirements,
+        'REFERENCE STYLE / PATTERNS (background context only):',
+        skillsBlock.slice(0, 30000),
+        '',
+        'Write ' + entry.path + ' now. Output only its contents.',
+      ].filter(Boolean).join('\n');
+
+      const opts: any = {
+        thinkingEnabled: false,
+        searchEnabled: false,
+        maxTokens: 8192,
+      };
+
+      let text = '';
+      let engineUsed = engineId || 'engine_deepseek';
+      try {
+        const r = await this.callEngine(filePrompt, opts, engineId);
+        text = r.text;
+        engineUsed = r.engineUsed;
+      } catch (e) {
+        log.error('project.build.perfile_call_failed', {
+          projectId,
+          path: entry.path,
+          step,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        // Continue with the next file — one bad file shouldn't kill the build.
+        continue;
+      }
+
+      if (!text || text.trim().length < 50) {
+        log.warn('project.build.perfile_empty', { projectId, path: entry.path, step });
+        continue;
+      }
+
+      const content = stripFileFences(text);
+      written.push({ path: entry.path, content });
+
+      log.info('project.build.file_written', {
+        projectId,
+        path: entry.path,
+        bytes: content.length,
+        step,
+        engineUsed,
+      });
+    }
+
+    if (written.length === 0) return null;
+    return written;
   }
 
   async build(
@@ -503,6 +1027,50 @@ export class ProjectBuilder {
     const stack = detectStack(existing.map((f) => f.path));
     const rules = rulesForStack(stack);
     const header = buildHeader(stack);
+
+    // If the user attached images, generate a 3D model first via
+    // three.ws Forge (free tier, hunyuan3d backend). The GLB URL flows
+    // into the manifest prompt and per-file context so scene.js knows
+    // what to load and index.html knows to include a canvas.
+    let image3D: { glbUrl: string; viewerUrl: string } | null = null;
+    if (attachments.images && attachments.images.length > 0) {
+      const imageUrls = attachments.images
+        .map((img) => img.dataUrl)
+        .filter((u) => typeof u === 'string' && u.length > 0);
+      if (imageUrls.length > 0) {
+        log.info('project.build.image3d_start', {
+          projectId,
+          images: imageUrls.length,
+        });
+        const r = await imageTo3D(imageUrls, prompt);
+        if (r) {
+          image3D = { glbUrl: r.glbUrl, viewerUrl: r.viewerUrl };
+          log.info('project.build.image3d_ok', {
+            projectId,
+            glbUrl: r.glbUrl,
+            backend: r.backend,
+            elapsedMs: r.elapsedMs,
+          });
+        } else {
+          log.warn('project.build.image3d_failed', { projectId });
+        }
+      }
+    }
+
+    // Phase A step 2: request a file manifest. When image3D is present
+    // the manifest prompt instructs the model to plan a Three.js scene.
+    const manifest = await this.generateProjectManifest(prompt, stack, image3D, engineId, isEdit);
+    if (manifest && manifest.length > 0) {
+      log.info('project.build.manifest_ready', {
+        projectId,
+        files: manifest.length,
+        total_kb_estimate: manifest.reduce((s, m) => s + (m.estimated_kb || 0), 0),
+        paths: manifest.map((m) => m.path),
+      });
+    } else {
+      log.warn('project.build.manifest_unavailable', { projectId });
+    }
+
     log.info('project.build.stack_detected', { projectId, stack, isEdit, fileCount: existing.length, engineId, contextCap: engineContextCap(engineId) });
 
     // Context block: on edits, include the current files. To keep the
@@ -652,19 +1220,78 @@ export class ProjectBuilder {
         truncated: options.skillsBlock!.length > MAX_SKILLS_BYTES,
       });
     }
-    const enrichedContext = contextBlock + skillsBlock + attachmentNote;
+    // If we generated a 3D model, prepend its URL to the skills block so
+    // both the JSON-blob path and every per-file prompt (scene.js,
+    // index.html, script.js) see it. buildPerFile already includes the
+    // skills block verbatim in each prompt.
+    const model3DNote = image3D
+      ? '=== 3D MODEL FOR THIS PAGE ===\n' +
+        'A 3D model has been generated and is available at:\n' +
+        image3D.glbUrl + '\n' +
+        'Viewer preview: ' + image3D.viewerUrl + '\n' +
+        'In scene.js: load it via GLTFLoader from this exact URL.\n' +
+        'In index.html: include <canvas id="scene-canvas"></canvas> in the hero.\n' +
+        '=== END 3D MODEL ===\n\n'
+      : '';
+    const skillsBlockForGen = model3DNote + skillsBlock;
+    const enrichedContext = contextBlock + skillsBlockForGen + attachmentNote;
+
+    // ---- Per-file path (manifest-driven) ----
+    // For fresh builds with a valid manifest, generate one file at a time.
+    // Each response stays under the 25 KB output wall. Falls back to the
+    // JSON blob path if per-file fails.
+    // Per-file path runs for BOTH fresh builds and edits. Manifests
+    // larger than 25 files are refused — the plan went off the rails.
+    if (manifest && manifest.length > 0 && manifest.length <= 25) {
+      log.info('project.build.perfile_start', {
+        projectId,
+        files: manifest.length,
+        isEdit,
+      });
+      const perFile = await this.buildPerFile(
+        projectId,
+        prompt,
+        manifest,
+        contextBlock,
+        skillsBlockForGen,
+        engineId,
+        isEdit,
+      );
+
+      if (perFile && perFile.length > 0) {
+        if (!isEdit) this.storage.clearProject(projectId);
+        const written: StoredFile[] = [];
+        for (const f of perFile) {
+          written.push(this.storage.writeFile(projectId, f.path, f.content));
+        }
+        const allFiles = this.storage.listFiles(projectId);
+        const previewUrl = publicBaseUrl.replace(/\/+$/, '') + '/projects/' +
+          encodeURIComponent(projectId) + '/preview/';
+        const summary = 'Built ' + written.length + ' file' +
+          (written.length === 1 ? '' : 's') + ' [per-file] · ' + allFiles.length + ' total.';
+        log.info('project.build.done_perfile', {
+          projectId,
+          written: written.length,
+          total: allFiles.length,
+          previewUrl,
+        });
+        return { projectId, files: allFiles, previewUrl, summary };
+      }
+
+      log.warn('project.build.perfile_failed_falling_back', { projectId });
+    }
 
     // ---- First attempt ----
-    let raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER, undefined, engineId);
+    const first = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER, undefined, engineId);
+    let raw = first.text;
     let parsed = extractJson(raw);
 
     // ---- Browser-engine fallback ----
     // DeepSeek's API honours a strict "return only JSON" contract. Browser
     // chat UIs (Qwen via wspr, Kimi, DeepHat) frequently don't — they reply
     // in markdown, wrap the JSON in prose, or ignore the format entirely.
-    // Rather than burn 3 retries on the same stubborn engine, rebind to
-    // DeepSeek for the retries. The log records which engine actually
-    // produced the final output.
+    // Rather than burn retries on the same stubborn engine, rebind to
+    // DeepSeek. This time we keep the session id for later continuation.
     if (!parsed && engineId !== 'engine_deepseek') {
       log.warn('project.build.engine_fallback_deepseek', {
         fromEngine: engineId,
@@ -672,35 +1299,42 @@ export class ProjectBuilder {
         rawPreview: raw.slice(0, 120),
       });
       engineId = 'engine_deepseek';
-    }
-
-    // ---- One retry with an aggressive reminder ----
-    // Detect truncation before treating as a parse failure.
-    if (!parsed && looksTruncated(raw)) {
-      log.warn('project.build.truncated_retrying', {
-        projectId,
-        raw_length: raw.length,
-        tail: raw.trim().slice(-60),
-      });
-      const splitReminder = [
-        '',
-        '=== RETRY (previous response was cut off mid-file) ===',
-        'Your last response exceeded the output limit and was truncated.',
-        'Respond again with the SAME request, but:',
-        '- Touch fewer files per response.',
-        '- Keep the total response under ' + Math.round(rules.totalOutputCap / 1024) + ' KB.',
-        '- If a file is too large to return in full, edit a different part of the codebase or break the request into multiple turns.',
-      ].join('\n');
-      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + splitReminder, 0.1, engineId);
+      const retry = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER, undefined, engineId);
+      raw = retry.text;
       parsed = extractJson(raw);
     }
 
+    // ---- Healing loop ----
+    // The DeepSeek web endpoint caps one response around 24 KB. When the
+    // response is cut off mid-JSON, embed the partial back into a new
+    // prompt and ask the model to continue from the exact same character.
+    // Does not depend on session IDs — works through the cookie bridge.
+    if (!parsed && looksTruncated(raw) && raw.length > 15000) {
+      log.warn('project.build.healing_start', {
+        projectId,
+        partialBytes: raw.length,
+        engineId,
+      });
+      const healed = await this.healIfTruncated(raw, projectId, engineId);
+      if (healed.length > raw.length) {
+        raw = healed;
+        parsed = extractJson(raw);
+        log.info('project.build.healing_done', {
+          projectId,
+          totalBytes: raw.length,
+          parsed: !!parsed,
+        });
+      }
+    }
+
+    // ---- Last resort: fresh restart with the aggressive JSON reminder ----
     if (!parsed) {
       log.warn('project.build.parse_failed_retrying', {
         projectId,
         raw_preview: raw.slice(0, 200),
       });
-      raw = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER, undefined, engineId);
+      const retry = await this.ask(header, enrichedContext, prompt, TAIL_REMINDER + '\n' + RETRY_REMINDER, undefined, engineId);
+      raw = retry.text;
       parsed = extractJson(raw);
     }
 

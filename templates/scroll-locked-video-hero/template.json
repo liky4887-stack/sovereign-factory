@@ -1,0 +1,30 @@
+{
+  "id": "scroll-locked-video-hero",
+  "name": "Scroll-Locked Video Hero",
+  "description": "Pre-rendered video scrubbed by scroll. Body is locked so the page cannot move. Title blurs out at 35%, tagline fades in at 82%. Every constant is tuned by hand.",
+  "files": [
+    "index.html",
+    "styles.css",
+    "scroll.js"
+  ],
+  "assets": [
+    "assets/car-scrub.mp4"
+  ],
+  "variables": {
+    "TITLE": {
+      "type": "string",
+      "max_words": 4,
+      "case": "uppercase"
+    },
+    "TAGLINE": {
+      "type": "string",
+      "max_words": 12
+    },
+    "ACCENT_HEX": {
+      "type": "hex_color",
+      "default": "#f2f4f8"
+    }
+  },
+  "when_to_use": "Cinematic hero with a 4-6s pre-rendered video asset. Best for automotive, luxury, product reveals.",
+  "not_for": "Text-heavy editorial pages, dashboards, pages with no video asset."
+}

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>{{TITLE}} | {{TAGLINE}}</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<section class="hero" id="hero" aria-label="{{TITLE}}">
+  <video
+    class="hero-video"
+    id="heroVideo"
+    src="assets/car-scrub.mp4"
+    muted
+    playsinline
+    preload="auto"
+    aria-hidden="true"></video>
+
+  <div class="hero-vignette" aria-hidden="true"></div>
+
+  <div class="hero-title-wrap" id="heroTitle">
+    <h1 class="hero-title">{{TITLE}}</h1>
+  </div>
+
+  <div class="hero-tagline-wrap" id="heroTagline">
+    <p class="hero-tagline">{{TAGLINE}}</p>
+  </div>
+
+  <div class="hero-hint" id="heroHint" aria-hidden="true">
+    <span>SCROLL</span>
+    <svg width="14" height="18" viewBox="0 0 14 18" fill="none">
+      <path d="M7 1 L7 17 M2 12 L7 17 L12 12"
+            stroke="currentColor" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+
+  <div class="hero-progress" aria-hidden="true">
+    <div class="hero-progress-bar" id="heroProgress"></div>
+  </div>
+</section>
+
+<script src="scroll.js" defer></script>
+</body>
+</html>

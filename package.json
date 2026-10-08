@@ -11,6 +11,24 @@
     "start:backend": "npm --workspace @factory/backend run start"
   },
   "dependencies": {
-    "express-async-errors": "^3.1.1"
-  }
+    "@rezaparsian/deepseek-pow-solver": "^1.0.1",
+    "@three-ws/forge": "^0.2.1",
+    "express": "4.22.3",
+    "express-async-errors": "^3.1.1",
+    "libdex-ts": "^1.0.1"
+  },
+  "description": "The brain. Orchestration, engines, Truth Ledger, Termux bridge, HTTP API.",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liky4887-stack/sovereign-factory.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/liky4887-stack/sovereign-factory/issues"
+  },
+  "homepage": "https://github.com/liky4887-stack/sovereign-factory#readme"
 }

@@ -314,7 +314,8 @@ export class DeepSeekService {
       throw new DeepSeekApiError(-1, 'HTTP ' + response.status + ': ' + text.slice(0, 300), response.status);
     }
 
-    const state: SseState = { text: '', lastPath: null };
+    
+const state: SseState = { text: '', lastPath: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
