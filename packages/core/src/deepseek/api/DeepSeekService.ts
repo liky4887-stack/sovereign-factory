@@ -100,6 +100,31 @@ function applySsePayload(payload: string, state: SseState): string {
 
 export class DeepSeekService {
   private static readonly MAX_TURNS_PER_SESSION = 5;
+  // Global pacing: serialize every DeepSeek call and enforce a minimum
+  // gap between consecutive calls. DeepSeek's per-account rate limit
+  // trips at ~10 calls in 20s regardless of session id; 2500ms gives us
+  // 12 per 30s, safely under the ceiling.
+  private static readonly MIN_CALL_GAP_MS =
+    Number(process.env.DEEPSEEK_MIN_CALL_GAP_MS ?? 5000);
+  private callChain: Promise<void> = Promise.resolve();
+  private lastCallAt = 0;
+
+  private async withCallSlot<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    const prev = this.callChain;
+    this.callChain = prev.then(() => gate);
+    await prev;
+    try {
+      const wait = this.lastCallAt + DeepSeekService.MIN_CALL_GAP_MS - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      this.lastCallAt = Date.now();
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   private readonly pathTokens = new Map<string, PathToken>();
   private lastChatAt: number | null = null;
   private lastChatOk: boolean | null = null;
@@ -315,6 +340,46 @@ export class DeepSeekService {
   }
 
   async callDeepSeek(input: string | DeepSeekMessage[], options: CallDeepSeekOptions = {}): Promise<DeepSeekApiResponse> {
+    return this.withCallSlot(() => this._callDeepSeekWithRetry(input, options));
+  }
+
+  private async _callDeepSeekWithRetry(
+    input: string | DeepSeekMessage[],
+    options: CallDeepSeekOptions,
+  ): Promise<DeepSeekApiResponse> {
+    const maxRetries = Number(process.env.DEEPSEEK_MAX_RETRIES ?? 5);
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await this._callDeepSeekInner(input, options);
+      } catch (e) {
+        lastErr = e;
+        const msg = String((e as any)?.message ?? '');
+        const isRateLimit =
+          msg.includes('zero content') ||
+          msg.includes('empty completion') ||
+          msg.includes('session likely exhausted');
+        if (!isRateLimit || attempt === maxRetries - 1) throw e;
+
+        // Jittered exponential backoff. DeepSeek's window is roughly
+        // 60-90s wide. We need to give it room to fully drain, and we
+        // need multiple concurrent callers to NOT retry in lockstep.
+        // base: 30s, 45s, 60s, 90s, 90s (capped)
+        // jitter: 0-15s additional to spread concurrent retries.
+        const base = [30000, 45000, 60000, 90000, 90000][attempt] ?? 90000;
+        const jitter = Math.floor(Math.random() * 15000);
+        const backoffMs = base + jitter;
+
+        console.warn(
+          `[deepseek] rate-limit detected (attempt ${attempt + 1}/${maxRetries}), waiting ${(backoffMs/1000).toFixed(1)}s before retry`
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+    }
+    throw lastErr ?? new Error('deepseek call failed');
+  }
+
+  private async _callDeepSeekInner(input: string | DeepSeekMessage[], options: CallDeepSeekOptions = {}): Promise<DeepSeekApiResponse> {
     const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
     const prompt = this.promptFromInput(input);
 
@@ -332,8 +397,15 @@ export class DeepSeekService {
     const answer = await this.pow.solve(ch.challenge, ch.salt, ch.expireAt, ch.difficulty);
     const powHeader = this.buildPowHeader(ch, answer, targetPath);
 
+    // Always open a fresh session. DeepSeek accumulates server-side
+    // context per session_id, and with 3 concurrent units sending
+    // 12-20KB prompts (evidence_report, tool results), the accumulated
+    // buffer crosses the ceiling after ~10 total turns. The mobile
+    // already sends the full transcript inline, so no context is lost
+    // by starting fresh each call. Throttle (2.5s gap) keeps session
+    // creation rate well under DeepSeek's session-creation limit.
     const sessionId = options.chatSessionId
-      ?? (await this.refreshPathToken(targetPath, false)).token;
+      ?? (await this.refreshPathToken(targetPath, true)).token;
 
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
     const controller = new AbortController();
@@ -389,6 +461,9 @@ const state: SseState = { text: '', thinking: '', lastPath: null, currentType: n
     // frames when the session has been poisoned. Turn that into a real
     // error so retry layers upstream actually see it.
     if (state.text.trim().length === 0) {
+      // Rate-limited or context-poisoned. Drop the cached session so the
+      // next call gets a fresh one instead of retrying the same dead token.
+      this.pathTokens.delete(targetPath);
       this.lastChatAt = Date.now();
       this.lastChatOk = false;
       this.lastChatError = 'empty completion (session context exhausted)';
@@ -425,8 +500,15 @@ const state: SseState = { text: '', thinking: '', lastPath: null, currentType: n
     const answer = await this.pow.solve(ch.challenge, ch.salt, ch.expireAt, ch.difficulty);
     const powHeader = this.buildPowHeader(ch, answer, targetPath);
 
+    // Always open a fresh session. DeepSeek accumulates server-side
+    // context per session_id, and with 3 concurrent units sending
+    // 12-20KB prompts (evidence_report, tool results), the accumulated
+    // buffer crosses the ceiling after ~10 total turns. The mobile
+    // already sends the full transcript inline, so no context is lost
+    // by starting fresh each call. Throttle (2.5s gap) keeps session
+    // creation rate well under DeepSeek's session-creation limit.
     const sessionId = options.chatSessionId
-      ?? (await this.refreshPathToken(targetPath, false)).token;
+      ?? (await this.refreshPathToken(targetPath, true)).token;
 
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
     const response = await fetch(url, {

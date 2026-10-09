@@ -32,7 +32,6 @@ import { IdeService } from '../ide/api/IdeService';
 import { createIdeRouter } from '../ide/http/IdeRouter';
 import { DeepSeekService } from '../deepseek/api/DeepSeekService';
 import { createDeepSeekRouter } from '../deepseek/http/DeepSeekRouter';
-import { createReaRouter } from '../rea/ReaRouter';
 import { createEventsRouter } from '../events/http/EventsRouter';
 import { ChatService } from '../chat/api/ChatService';
 import { createChatRouter } from '../chat/http/ChatRouter';
@@ -153,7 +152,6 @@ export class TermuxBridgeServer {
     this.app.use(createMysticRealmRouter(this.mysticRealm));
     this.app.use(createIdeRouter(this.ide));
     this.app.use('/deepseek', createDeepSeekRouter(this.deepseek));
-    this.app.use('/rea', createReaRouter());
     this.app.use('/events', createEventsRouter());
     this.app.use('/chat', createChatRouter(this.chat));
     this.app.use('/debug', createAuthDebugRouter());
