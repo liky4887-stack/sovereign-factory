@@ -63,3 +63,6 @@ Thumbs.db
 
 # Patch backups — never commit these
 *.before-*
+*.bak.*
+fix_creds.sh
+debug-captures/

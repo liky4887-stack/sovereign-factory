@@ -27,7 +27,9 @@ import { dispatchChatCommand } from '../../engines/CommandRouter';
  */
 interface SseState {
   text: string;
+  thinking: string;
   lastPath: string | null;
+  currentType: 'THINK' | 'RESPONSE' | null;
 }
 
 function applySsePayload(payload: string, state: SseState): string {
@@ -42,9 +44,13 @@ function applySsePayload(payload: string, state: SseState): string {
   if (j.v && typeof j.v === 'object' && j.v.response) {
     const frags = j.v.response.fragments;
     if (Array.isArray(frags)) {
-      for (const f of frags) {
-        if (f && typeof f.content === 'string') {
-          state.text += f.content;
+      for (const fr of frags) {
+        if (!fr) continue;
+        const t: 'THINK' | 'RESPONSE' = fr.type === 'THINK' ? 'THINK' : 'RESPONSE';
+        state.currentType = t;
+        if (typeof fr.content === 'string' && fr.content.length > 0) {
+          if (t === 'RESPONSE') state.text += fr.content;
+          else state.thinking += fr.content;
         }
       }
     }
@@ -52,19 +58,40 @@ function applySsePayload(payload: string, state: SseState): string {
     return state.text.slice(before);
   }
 
-  // Case 2: explicit JSON patch {p, o, v}.
-  if (typeof j.p === 'string' && typeof j.o === 'string') {
-    if (j.p.includes('content') && typeof j.v === 'string') {
-      if (j.o === 'APPEND') state.text += j.v;
-      else if (j.o === 'SET') state.text = j.v;
+  // Case 2a: whole new fragment appended to the array.
+  if (j.p === 'response/fragments' && j.o === 'APPEND' && Array.isArray(j.v)) {
+    for (const fr of j.v) {
+      if (!fr) continue;
+      const t: 'THINK' | 'RESPONSE' = fr.type === 'THINK' ? 'THINK' : 'RESPONSE';
+      state.currentType = t;
+      if (typeof fr.content === 'string' && fr.content.length > 0) {
+        if (t === 'RESPONSE') state.text += fr.content;
+        else state.thinking += fr.content;
+      }
     }
-    state.lastPath = j.p;
+    state.lastPath = 'response/fragments/-1/content';
     return state.text.slice(before);
   }
 
-  // Case 3: bare continuation {v: "..."} — append to last content path.
-  if (typeof j.v === 'string' && state.lastPath && state.lastPath.includes('content')) {
-    state.text += j.v;
+  // Case 2b: explicit JSON patch to a content path.
+  if (typeof j.p === 'string' && typeof j.o === 'string') {
+    if (j.p.endsWith('/content') && typeof j.v === 'string') {
+      if (state.currentType === 'THINK') {
+        if (j.o === 'APPEND') state.thinking += j.v;
+        else if (j.o === 'SET') state.thinking = j.v;
+      } else {
+        if (j.o === 'APPEND') state.text += j.v;
+        else if (j.o === 'SET') state.text = j.v;
+      }
+      state.lastPath = j.p;
+    }
+    return state.text.slice(before);
+  }
+
+  // Case 3: bare continuation {v: "..."} — append to last active content path.
+  if (typeof j.v === 'string' && state.lastPath && state.lastPath.endsWith('/content')) {
+    if (state.currentType === 'THINK') state.thinking += j.v;
+    else state.text += j.v;
     return state.text.slice(before);
   }
 
@@ -72,6 +99,7 @@ function applySsePayload(payload: string, state: SseState): string {
 }
 
 export class DeepSeekService {
+  private static readonly MAX_TURNS_PER_SESSION = 5;
   private readonly pathTokens = new Map<string, PathToken>();
   private lastChatAt: number | null = null;
   private lastChatOk: boolean | null = null;
@@ -229,14 +257,31 @@ export class DeepSeekService {
     const path = targetPath ?? this.opts.defaultTargetPath;
     if (!force) {
       const cached = this.pathTokens.get(path);
-      if (cached && cached.expiresAt > Date.now()) return { token: cached.token, expiresAt: cached.expiresAt };
+      if (
+        cached &&
+        cached.expiresAt > Date.now() &&
+        cached.turns < DeepSeekService.MAX_TURNS_PER_SESSION
+      ) {
+        return { token: cached.token, expiresAt: cached.expiresAt };
+      }
     }
     const ch = await this.createPowChallenge(path);
     const answer = await this.pow.solve(ch.challenge, ch.salt, ch.expireAt, ch.difficulty);
     const sessionId = await this.createChatSession(ch, answer, path);
-    const expiresAt = Date.now() + 3600 * 1000;
-    this.pathTokens.set(path, { targetPath: path, token: sessionId, expiresAt });
+    const expiresAt = Date.now() + (this.opts.pathTokenTtlSafetyMs ?? 30_000);
+    this.pathTokens.set(path, {
+      targetPath: path,
+      token: sessionId,
+      expiresAt,
+      turns: 0,
+      createdAt: Date.now(),
+    });
     return { token: sessionId, expiresAt };
+  }
+
+  private bumpTurns(targetPath: string, sessionId: string): void {
+    const entry = this.pathTokens.get(targetPath);
+    if (entry && entry.token === sessionId) entry.turns += 1;
   }
 
   listCachedPathTokens(): PathToken[] {
@@ -288,7 +333,7 @@ export class DeepSeekService {
     const powHeader = this.buildPowHeader(ch, answer, targetPath);
 
     const sessionId = options.chatSessionId
-      || (await this.refreshPathToken(targetPath, false)).token;
+      ?? (await this.refreshPathToken(targetPath, false)).token;
 
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
     const controller = new AbortController();
@@ -315,7 +360,7 @@ export class DeepSeekService {
     }
 
     
-const state: SseState = { text: '', lastPath: null };
+const state: SseState = { text: '', thinking: '', lastPath: null, currentType: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -340,9 +385,26 @@ const state: SseState = { text: '', lastPath: null };
     }
     try { reader.releaseLock(); } catch (_) {}
 
+    // Silent-empty guard. DeepSeek returns HTTP 200 with zero content
+    // frames when the session has been poisoned. Turn that into a real
+    // error so retry layers upstream actually see it.
+    if (state.text.trim().length === 0) {
+      this.lastChatAt = Date.now();
+      this.lastChatOk = false;
+      this.lastChatError = 'empty completion (session context exhausted)';
+      throw new DeepSeekApiError(
+        -1,
+        'DeepSeek returned HTTP 200 with zero content — session likely exhausted',
+        200,
+      );
+    }
+
     this.lastChatAt = Date.now();
     this.lastChatOk = true;
     this.lastChatError = null;
+
+    // Rotate session before it hits DeepSeek's context ceiling.
+    this.bumpTurns(targetPath, sessionId);
 
     return {
       code: 0,
@@ -364,7 +426,7 @@ const state: SseState = { text: '', lastPath: null };
     const powHeader = this.buildPowHeader(ch, answer, targetPath);
 
     const sessionId = options.chatSessionId
-      || (await this.refreshPathToken(targetPath, false)).token;
+      ?? (await this.refreshPathToken(targetPath, false)).token;
 
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
     const response = await fetch(url, {
@@ -380,7 +442,7 @@ const state: SseState = { text: '', lastPath: null };
       return;
     }
 
-    const state: SseState = { text: '', lastPath: null };
+    const state: SseState = { text: '', thinking: '', lastPath: null, currentType: null };
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';

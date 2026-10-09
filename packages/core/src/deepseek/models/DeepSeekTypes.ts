@@ -35,6 +35,8 @@ export interface PathToken {
   targetPath: string;
   token: string;
   expiresAt: number;
+  turns: number;
+  createdAt: number;
 }
 
 export interface StreamChunk {
