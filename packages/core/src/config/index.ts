@@ -103,7 +103,7 @@ export const config = Object.freeze({
   },
   XAI: {
     baseUrl: env('GROK_BASE_URL', 'https://grok.com').replace(/\/+$/, ''),
-    defaultModel: env('GROK_DEFAULT_MODEL', 'grok-3'),
+    defaultModel: env('GROK_DEFAULT_MODEL', 'fast'),
     requestTimeoutMs: envInt('GROK_REQUEST_TIMEOUT_MS', 120000),
     credentialsFile: env('GROK_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'grok-creds.json')),
   },

@@ -196,10 +196,10 @@ async function main(): Promise<void> {
   try {
     if (existsSync(config.XAI.credentialsFile)) {
       const raw = JSON.parse(readFileSync(config.XAI.credentialsFile, 'utf8'));
-      if (raw.cookies && raw.bearerToken) {
+      if (raw.cookies) {
         grok.setCredentials({
           cookies: raw.cookies,
-          bearerToken: raw.bearerToken,
+          bearerToken: typeof raw.bearerToken === 'string' ? raw.bearerToken : '',
           csrfToken: raw.csrfToken,
           extraHeaders: raw.extraHeaders,
         });

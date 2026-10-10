@@ -89,8 +89,10 @@ export class GrokService {
   }
 
   hasCredentials(): boolean {
-    return this.cookies !== null && this.cookies.length > 0 &&
-           this.bearerToken !== null && this.bearerToken.length > 0;
+    // grok.com web auth is cookie-only (sso cookie). Bearer is optional
+    // and only sent if present — sending it can be rejected as a bogus
+    // management key by the grpc-gateway.
+    return this.cookies !== null && this.cookies.length > 0;
   }
 
   getCredentialsRedacted(): GrokCredRaw {
@@ -121,7 +123,11 @@ export class GrokService {
       referer: this.cfg.baseUrl + '/',
     };
     if (this.cookies) h.cookie = this.cookies;
-    if (this.bearerToken) h.authorization = 'Bearer ' + this.bearerToken;
+    // Only attach authorization if the token is a real JWT (three dot-separated
+    // segments). Placeholder strings and API-key-shaped values break the
+    // grpc-gateway with "Invalid bearer token — management key".
+    const looksJwt = this.bearerToken && this.bearerToken.split('.').length === 3;
+    if (looksJwt) h.authorization = 'Bearer ' + this.bearerToken;
     if (this.csrfToken) h['x-csrf-token'] = this.csrfToken;
     if (this.extraHeaders) Object.assign(h, this.extraHeaders);
     return h;
@@ -140,25 +146,48 @@ export class GrokService {
     // Grok web takes a single message + history; simplest form: concatenate
     // system into the first user message, pass full history.
     const first = messages[0];
+    // grok.com web API as of mid-2026:
+    //  - field is `modeId` (top-level). `modelName` and `modelMode` are dead.
+    //  - valid modes: fast | expert | heavy | grok-420-computer-use-sa.
+    //    `auto` was REMOVED and returns 403 "Model is not found".
+    //  - payload now requires UI state fields (deviceEnvInfo, isAsyncChat,
+    //    disableMemory, disableSelfHarmShortCircuit, disableTextFollowUps).
+    const rawMode = String((options as any).modeId || (options as any).model || this.cfg.defaultModel || 'fast');
+    const VALID_MODES = new Set(['fast', 'expert', 'heavy', 'grok-420-computer-use-sa']);
+    const modeId = VALID_MODES.has(rawMode) ? rawMode : 'fast';
     const body: Record<string, unknown> = {
-      temporary: false,
-      modelName: (options as any).model || this.cfg.defaultModel,
-      modelMode: (options as any).modelMode || 'MODEL_MODE_AUTO',
-      message: first.content,
-      fileAttachments: [],
-      imageAttachments: [],
+      deviceEnvInfo: {
+        darkModeEnabled: false,
+        devicePixelRatio: 2,
+        screenWidth: 2056,
+        screenHeight: 1329,
+        viewportWidth: 2056,
+        viewportHeight: 1083,
+      },
+      disableMemory: false,
       disableSearch: false,
+      disableSelfHarmShortCircuit: false,
+      disableTextFollowUps: false,
       enableImageGeneration: false,
+      enableImageStreaming: false,
+      enableSideBySide: true,
+      fileAttachments: [],
+      forceConcise: false,
+      forceSideBySide: false,
+      imageAttachments: [],
+      imageGenerationCount: 2,
+      isAsyncChat: false,
+      isReasoning: modeId === 'expert' || modeId === 'heavy',
+      message: first.content,
+      modeId,
+      responseMetadata: {
+        requestModelDetails: { modelId: modeId },
+      },
       returnImageBytes: false,
       returnRawGrokInXaiRequest: false,
-      enableImageStreaming: false,
-      imageGenerationCount: 2,
-      forceConcise: false,
-      toolOverrides: {},
-      enableSideBySide: true,
       sendFinalMetadata: true,
-      isReasoning: !!options.thinkingEnabled,
-      disableTextFollowUps: false,
+      temporary: false,
+      toolOverrides: {},
     };
 
     this.lastCallAt = Date.now();
