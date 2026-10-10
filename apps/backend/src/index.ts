@@ -62,6 +62,10 @@ import { TwinOrchestrator } from '../../../packages/core/src/engines/TwinOrchest
 import { ENGINE_IDS } from '../../../packages/core/src/engines/LlmEngine';
 import { DeepSeekEngineAdapter } from '../../../packages/core/src/engines/adapters/DeepSeekEngineAdapter';
 import { JsonChatRepository } from '../../../packages/core/src/chat/storage/JsonChatRepository';
+import { GrokService } from '../../../packages/core/src/engines/grok/GrokService';
+import { GrokEngineAdapter } from '../../../packages/core/src/engines/grok/GrokEngineAdapter';
+import { GeminiService } from '../../../packages/core/src/engines/gemini/GeminiService';
+import { GeminiEngineAdapter } from '../../../packages/core/src/engines/gemini/GeminiEngineAdapter';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -172,6 +176,54 @@ async function main(): Promise<void> {
     defaultShieldData: config.KIMI.defaultShieldData,
   });
   engineRegistry.register(kimi);
+
+  const grok = new GrokService({
+    baseUrl: config.XAI.baseUrl,
+    defaultModel: config.XAI.defaultModel,
+    requestTimeoutMs: config.XAI.requestTimeoutMs,
+    credentialsFile: config.XAI.credentialsFile,
+  });
+  engineRegistry.register(new GrokEngineAdapter(grok));
+
+  const gemini = new GeminiService({
+    baseUrl: config.GEMINI.baseUrl,
+    defaultModel: config.GEMINI.defaultModel,
+    requestTimeoutMs: config.GEMINI.requestTimeoutMs,
+    credentialsFile: config.GEMINI.credentialsFile,
+  });
+  engineRegistry.register(new GeminiEngineAdapter(gemini));
+
+  try {
+    if (existsSync(config.XAI.credentialsFile)) {
+      const raw = JSON.parse(readFileSync(config.XAI.credentialsFile, 'utf8'));
+      if (raw.cookies && raw.bearerToken) {
+        grok.setCredentials({
+          cookies: raw.cookies,
+          bearerToken: raw.bearerToken,
+          csrfToken: raw.csrfToken,
+          extraHeaders: raw.extraHeaders,
+        });
+        log.info('grok.credentials.loaded_from_file', { path: config.XAI.credentialsFile });
+      }
+    }
+  } catch (e) {
+    log.warn('grok.credentials.file_unreadable', { error: e instanceof Error ? e.message : String(e) });
+  }
+  try {
+    if (existsSync(config.GEMINI.credentialsFile)) {
+      const raw = JSON.parse(readFileSync(config.GEMINI.credentialsFile, 'utf8'));
+      if (raw.cookies && raw.atToken) {
+        gemini.setCredentials({
+          cookies: raw.cookies,
+          atToken: raw.atToken,
+          extraHeaders: raw.extraHeaders,
+        });
+        log.info('gemini.credentials.loaded_from_file', { path: config.GEMINI.credentialsFile });
+      }
+    }
+  } catch (e) {
+    log.warn('gemini.credentials.file_unreadable', { error: e instanceof Error ? e.message : String(e) });
+  }
 
   // ─── DeepHat engine (cookie gateway on 8089) ───────────────
   const deephatCredsFile = process.env.DEEPHAT_CREDS_FILE

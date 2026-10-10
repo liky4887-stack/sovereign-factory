@@ -80,6 +80,9 @@ export const ENGINE_IDS = {
   DEEPSEEK: 'engine_deepseek',
   QWEN: 'engine_qwen',
   KIMI: 'engine_kimi',
+  DEEPHAT: 'engine_deephat',
+  GROK: 'engine_grok',
+  GEMINI: 'engine_gemini',
 } as const;
 
 export type EngineId = typeof ENGINE_IDS[keyof typeof ENGINE_IDS];

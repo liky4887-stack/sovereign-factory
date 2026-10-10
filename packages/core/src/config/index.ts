@@ -101,6 +101,18 @@ export const config = Object.freeze({
     defaultTimezone: env('KIMI_TIMEZONE', 'Africa/Tripoli'),
     defaultShieldData: env('KIMI_SHIELD_DATA', ''),
   },
+  XAI: {
+    baseUrl: env('GROK_BASE_URL', 'https://grok.com').replace(/\/+$/, ''),
+    defaultModel: env('GROK_DEFAULT_MODEL', 'grok-3'),
+    requestTimeoutMs: envInt('GROK_REQUEST_TIMEOUT_MS', 120000),
+    credentialsFile: env('GROK_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'grok-creds.json')),
+  },
+  GEMINI: {
+    baseUrl: env('GEMINI_BASE_URL', 'https://gemini.google.com').replace(/\/+$/, ''),
+    defaultModel: env('GEMINI_DEFAULT_MODEL', 'gemini-2.0-flash'),
+    requestTimeoutMs: envInt('GEMINI_REQUEST_TIMEOUT_MS', 120000),
+    credentialsFile: env('GEMINI_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'gemini-creds.json')),
+  },
 });
 
 export type Config = typeof config;
