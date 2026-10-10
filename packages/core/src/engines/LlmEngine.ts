@@ -83,6 +83,7 @@ export const ENGINE_IDS = {
   DEEPHAT: 'engine_deephat',
   GROK: 'engine_grok',
   GEMINI: 'engine_gemini',
+  CHATGPT: 'engine_chatgpt',
 } as const;
 
 export type EngineId = typeof ENGINE_IDS[keyof typeof ENGINE_IDS];

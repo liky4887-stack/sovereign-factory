@@ -275,15 +275,6 @@ export class GeminiService {
         throw new Error(`Gemini HTTP ${res.status}: ${text.slice(0, 200)}`);
       }
       const raw = await res.text();
-      // Debug: dump raw response so we can inspect the true nesting shape.
-      // Log first 2000 chars (enough to see wrb.fr + inner JSON structure).
-      try {
-        const fs = require('node:fs');
-        fs.writeFileSync(
-          process.env.HOME + '/gemini-raw-response.txt',
-          raw
-        );
-      } catch {}
       const content = this.parseStreamGenerate(raw);
       this.lastCallOk = true;
       this.lastCallError = null;

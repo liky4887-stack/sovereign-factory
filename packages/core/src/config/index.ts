@@ -107,6 +107,12 @@ export const config = Object.freeze({
     requestTimeoutMs: envInt('GROK_REQUEST_TIMEOUT_MS', 120000),
     credentialsFile: env('GROK_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'grok-creds.json')),
   },
+  CHATGPT: {
+    baseUrl: env('CHATGPT_BASE_URL', 'https://chatgpt.com').replace(/\/+$/, ''),
+    defaultModel: env('CHATGPT_DEFAULT_MODEL', 'gpt-4o'),
+    requestTimeoutMs: envInt('CHATGPT_REQUEST_TIMEOUT_MS', 120000),
+    credentialsFile: env('CHATGPT_CREDENTIALS_FILE', path.join(HOME, 'cookies', 'chatgpt-creds.json')),
+  },
   GEMINI: {
     baseUrl: env('GEMINI_BASE_URL', 'https://gemini.google.com').replace(/\/+$/, ''),
     defaultModel: env('GEMINI_DEFAULT_MODEL', 'gemini-2.0-flash'),

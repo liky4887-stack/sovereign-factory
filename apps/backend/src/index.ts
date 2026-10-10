@@ -66,6 +66,8 @@ import { GrokService } from '../../../packages/core/src/engines/grok/GrokService
 import { GrokEngineAdapter } from '../../../packages/core/src/engines/grok/GrokEngineAdapter';
 import { GeminiService } from '../../../packages/core/src/engines/gemini/GeminiService';
 import { GeminiEngineAdapter } from '../../../packages/core/src/engines/gemini/GeminiEngineAdapter';
+import { ChatGptService } from '../../../packages/core/src/engines/chatgpt/ChatGptService';
+import { ChatGptEngineAdapter } from '../../../packages/core/src/engines/chatgpt/ChatGptEngineAdapter';
 
 async function main(): Promise<void> {
   log.info('factory.boot.start', {
@@ -192,6 +194,26 @@ async function main(): Promise<void> {
     credentialsFile: config.GEMINI.credentialsFile,
   });
   engineRegistry.register(new GeminiEngineAdapter(gemini));
+
+  // ─── ChatGPT engine (cookie-based, chatgpt.com) ────────────────
+  const chatgpt = new ChatGptService({
+    baseUrl: config.CHATGPT.baseUrl,
+    defaultModel: config.CHATGPT.defaultModel,
+    requestTimeoutMs: config.CHATGPT.requestTimeoutMs,
+  });
+  engineRegistry.register(new ChatGptEngineAdapter(chatgpt));
+
+  try {
+    if (existsSync(config.CHATGPT.credentialsFile)) {
+      const raw = JSON.parse(readFileSync(config.CHATGPT.credentialsFile, 'utf8'));
+      if (raw.cookies) {
+        chatgpt.setCredentials({ cookies: raw.cookies });
+        log.info('chatgpt.credentials.loaded_from_file', { path: config.CHATGPT.credentialsFile });
+      }
+    }
+  } catch (e) {
+    log.warn('chatgpt.credentials.file_unreadable', { error: e instanceof Error ? e.message : String(e) });
+  }
 
   try {
     if (existsSync(config.XAI.credentialsFile)) {
