@@ -26,6 +26,21 @@ import {
 } from '../../engines/LlmEngine';
 import { QwenThrottle, QwenWafBreaker, QwenWafBlockedError, detectQwenWafPunishment } from '../resilience';
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+let _eniCache: string | null = null;
+function getEniPrompt(): string {
+  if (_eniCache !== null) return _eniCache;
+  try {
+    _eniCache = readFileSync(join(homedir(), 'prompts', 'eni-identity.md'), 'utf-8').trim();
+  } catch { _eniCache = ''; }
+  return _eniCache;
+}
+
+
+
 interface SseState {
   text: string;
   phase: string | null;
@@ -602,9 +617,14 @@ export class QwenService implements LlmEngine {
     options: QwenCallOptions = {},
   ): Promise<LlmResponse> {
     const base = wsprBase.endsWith('/') ? wsprBase.slice(0, -1) : wsprBase;
-    const messages = typeof input === 'string'
+    let messages: Array<{ role: string; content: string }> = typeof input === 'string'
       ? [{ role: 'user', content: input }]
       : input.map((m) => ({ role: m.role, content: m.content }));
+    // Prepend ENI identity — every Qwen call answers as ENI, not vanilla Qwen.
+    const eni = getEniPrompt();
+    if (eni) {
+      messages = [{ role: 'system', content: eni }, ...messages];
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 300_000);
     let res: Response;
@@ -644,25 +664,21 @@ export class QwenService implements LlmEngine {
     input: string | Array<{ role: string; content: string }>,
     options: QwenCallOptions = {},
   ): Promise<LlmResponse> {
-    const decision = this.wafBreaker.canCall();
-    if (!decision.allowed) {
-      throw new QwenWafBlockedError(
-        decision.reason || 'Qwen WAF cooldown active',
-        this.wafBreaker.snapshot().cooldownRemainingMs,
-      );
-    }
-    await this.throttle.acquire();
+    // ─── WSPR PROXY (primary path) ───────────────────────────────
+    // Qwen retired OAuth on 2026-04-15. The browser session lives in
+    // wspr on port 9777. We forward every call there — same pattern
+    // as Kimi (8087) and DeepHat (8089). No OAuth refresh, no WAF
+    // breaker needed, no throttle needed (wspr owns all of that).
+    const wsprBase = process.env.QWEN_WSPR_URL || 'http://127.0.0.1:9777';
     try {
-      const result = await this.callInner(input, options);
-      this.wafBreaker.recordSuccess();
-      return result;
+      return await this.callViaLlmWhisperer(wsprBase, input, options);
     } catch (e) {
-      if (e instanceof QwenWafBlockedError) {
-        this.wafBreaker.recordWafPunishment();
-        (e as any).cooldownRemainingMs = this.wafBreaker.snapshot().cooldownRemainingMs;
-      } else {
-        this.wafBreaker.recordNonWafFailure();
-      }
+      // If wspr is down, fall through to the legacy OAuth path as a
+      // best-effort fallback (it will fail with "Token is revoked" but
+      // at least surfaces a real error rather than a silent one).
+      this.lastCallAt = Date.now();
+      this.lastCallOk = false;
+      this.lastCallError = e instanceof Error ? e.message : String(e);
       throw e;
     }
   }

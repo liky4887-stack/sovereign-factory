@@ -16,6 +16,21 @@ import {
 } from '../models/DeepSeekErrors';
 import { dispatchChatCommand } from '../../engines/CommandRouter';
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+let _eniCache: string | null = null;
+function getEniPrompt(): string {
+  if (_eniCache !== null) return _eniCache;
+  try {
+    _eniCache = readFileSync(join(homedir(), 'prompts', 'eni-identity.md'), 'utf-8').trim();
+  } catch { _eniCache = ''; }
+  return _eniCache;
+}
+
+
+
 /**
  * DeepSeek streams JSON-Patch style SSE frames. Three shapes:
  *   1. Initial:  {"v":{"response":{"fragments":[{"content":"Hello"}]}}}
@@ -99,6 +114,9 @@ function applySsePayload(payload: string, state: SseState): string {
 }
 
 export class DeepSeekService {
+  private _accessToken: string | null = null;
+  private _accessTokenExpiresAt = 0;
+
   private static readonly MAX_TURNS_PER_SESSION = 5;
   // Global pacing: serialize every DeepSeek call and enforce a minimum
   // gap between consecutive calls. DeepSeek's per-account rate limit
@@ -339,6 +357,43 @@ export class DeepSeekService {
     return body;
   }
 
+
+  private async getValidAccessToken(): Promise<string> {
+    if (this._accessToken && Date.now() < this._accessTokenExpiresAt) {
+      return this._accessToken;
+    }
+    const __c = this.creds.get();
+    let userToken: string | null = null;
+    try {
+      const __credPath = process.env.DEEPSEEK_CREDENTIALS_FILE || join(homedir(), 'cookies', 'deepseek-creds.json');
+      const __raw = JSON.parse(readFileSync(__credPath, 'utf-8')) as any;
+      userToken = __raw?.userToken || __raw?.bearerToken || null;
+    } catch { /* fall through to store */ }
+    if (!userToken) userToken = __c?.bearerToken ?? null;
+    if (!userToken) throw new Error('DeepSeek userToken missing — re-extract from chat.deepseek.com localStorage');
+
+    const res = await fetch('https://chat.deepseek.com/api/v0/users/current', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${userToken}`,
+        'Cookie': (__c?.cookies) || '',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36',
+      },
+    });
+
+    const json = await res.json() as any;
+    if (json.code === 40003) throw new Error('DeepSeek userToken invalid/expired — re-extract from chat.deepseek.com localStorage');
+    if (json.code === 40002) throw new Error('DeepSeek userToken missing — provide one via POST /deepseek/credentials');
+    if (json.code !== 0) throw new Error(`DeepSeek /users/current failed: code=${json.code} msg=${json.msg}`);
+
+    const accessToken = json?.data?.biz_data?.token;
+    if (!accessToken) throw new Error('DeepSeek /users/current returned no token');
+
+    this._accessToken = accessToken;
+    this._accessTokenExpiresAt = Date.now() + 3_600_000;
+    return accessToken;
+  }
+
   async callDeepSeek(input: string | DeepSeekMessage[], options: CallDeepSeekOptions = {}): Promise<DeepSeekApiResponse> {
     return this.withCallSlot(() => this._callDeepSeekWithRetry(input, options));
   }
@@ -347,7 +402,7 @@ export class DeepSeekService {
     input: string | DeepSeekMessage[],
     options: CallDeepSeekOptions,
   ): Promise<DeepSeekApiResponse> {
-    const maxRetries = Number(process.env.DEEPSEEK_MAX_RETRIES ?? 5);
+    const maxRetries = Number(process.env.DEEPSEEK_MAX_RETRIES ?? 3);
     let lastErr: unknown = null;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
@@ -360,18 +415,11 @@ export class DeepSeekService {
           msg.includes('empty completion') ||
           msg.includes('session likely exhausted');
         if (!isRateLimit || attempt === maxRetries - 1) throw e;
-
-        // Jittered exponential backoff. DeepSeek's window is roughly
-        // 60-90s wide. We need to give it room to fully drain, and we
-        // need multiple concurrent callers to NOT retry in lockstep.
-        // base: 30s, 45s, 60s, 90s, 90s (capped)
-        // jitter: 0-15s additional to spread concurrent retries.
-        const base = [30000, 45000, 60000, 90000, 90000][attempt] ?? 90000;
-        const jitter = Math.floor(Math.random() * 15000);
-        const backoffMs = base + jitter;
-
+        // Long backoff on rate limit — gives DeepSeek's sliding window
+        // time to drain. 20s, 40s, 60s.
+        const backoffMs = Math.min(60000, 20000 * Math.pow(2, attempt));
         console.warn(
-          `[deepseek] rate-limit detected (attempt ${attempt + 1}/${maxRetries}), waiting ${(backoffMs/1000).toFixed(1)}s before retry`
+          `[deepseek] rate-limit detected (attempt ${attempt + 1}/${maxRetries}), waiting ${backoffMs/1000}s before retry`
         );
         await new Promise((r) => setTimeout(r, backoffMs));
       }
@@ -380,8 +428,23 @@ export class DeepSeekService {
   }
 
   private async _callDeepSeekInner(input: string | DeepSeekMessage[], options: CallDeepSeekOptions = {}): Promise<DeepSeekApiResponse> {
+    // Refresh access token before every call — userToken is a refresh token.
+    const freshToken = await this.getValidAccessToken();
+    const __cc = this.creds.get();
+    if (__cc) {
+      this.creds.set({
+        bearerToken: freshToken,
+        cookies: __cc.cookies,
+        hifLeim: __cc.hifLeim,
+        hifDliq: __cc.hifDliq,
+        deviceId: __cc.deviceId,
+      });
+    }
+
     const targetPath = options.targetPath ?? this.opts.defaultTargetPath;
-    const prompt = this.promptFromInput(input);
+    const rawPrompt = this.promptFromInput(input);
+    const eni = getEniPrompt();
+    const prompt = eni ? `${eni}\n\n---\n\nUser: ${rawPrompt}` : rawPrompt;
 
     const correlation_id = 'chat_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
     const dispatch = await dispatchChatCommand(options.rawPrompt ?? prompt, correlation_id);

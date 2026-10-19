@@ -24,8 +24,8 @@ import {
 } from '../../engines/LlmEngine';
 
 const GATEWAY_URL =
-  (process.env.KIMI_GATEWAY_URL || 'http://127.0.0.1:8088').replace(/\/+$/, '');
-const GATEWAY_KEY = process.env.KIMI_GATEWAY_KEY || 'sk-local-kimi';
+  (process.env.KIMI_GATEWAY_URL || 'http://127.0.0.1:8087').replace(/\/+$/, '');
+const GATEWAY_KEY = process.env.KIMI_GATEWAY_KEY || 'sk-local-us4GUIlHftEFbGwSnj2LeiyuAN21GjvO';
 const GATEWAY_MODEL = process.env.KIMI_GATEWAY_MODEL || 'k2d6-chat';
 
 export class KimiService implements LlmEngine {
