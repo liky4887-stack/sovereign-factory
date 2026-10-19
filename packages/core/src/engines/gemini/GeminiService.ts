@@ -38,11 +38,11 @@ export class GeminiService implements LlmEngine {
   constructor(private readonly cfg: GeminiConfig = {}) {}
 
   private get port(): number {
-    return this.cfg.freebiePort ?? Number(process.env.FREEBIE_PORT ?? 8001);
+    return this.cfg.freebiePort ?? Number(process.env.GEMINI_PROXY_PORT ?? 8081);
   }
 
   private get model(): string {
-    return this.cfg.defaultModel || 'gemini-3.6-flash';
+    return this.cfg.defaultModel || 'gemini-auto';
   }
 
   async call(
@@ -112,7 +112,7 @@ export class GeminiService implements LlmEngine {
       lastCallAt: this.lastCallAt,
       lastCallOk: this.lastCallOk,
       lastCallError: this.lastCallError,
-      provider: 'freebie',
+      provider: 'gemini-web2api',
       model: this.model,
       freebiePort: this.port,
     };

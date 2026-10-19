@@ -22,6 +22,7 @@ export interface LocalProxyOptions {
   maxTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
+  path?: string;
 }
 
 export interface LocalProxyResponse {
@@ -58,7 +59,8 @@ export async function callLocalProxy(opts: LocalProxyOptions): Promise<LocalProx
     });
   }
 
-  const url = `http://127.0.0.1:${opts.port}/v1/chat/completions`;
+  const urlPath = opts.path || '/v1/chat/completions';
+  const url = `http://127.0.0.1:${opts.port}${urlPath}`;
 
   // Force Gemini for stability. ChatGPT (gpt-4o) gets 429'd under load and
   // echoes long prompts instead of answering. Gemini-3.6-flash is zero-auth,
