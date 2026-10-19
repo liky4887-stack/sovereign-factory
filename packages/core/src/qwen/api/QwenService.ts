@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 // Qwen engine — service layer. Real protocol per captured browser traffic.
 // Auth: Bearer accessToken (JWT, ~15 min) + WAF cookie jar + bx-* fingerprints.
 // Endpoint: POST /api/v2/chat/completions?chat_id=<id>
@@ -217,7 +218,7 @@ export class QwenService implements LlmEngine {
         if (c.bxUa) headers['bx-ua'] = c.bxUa;
         if (c.bxUmidToken) headers['bx-umidtoken'] = c.bxUmidToken;
 
-        const r = await fetch(url, { method: 'GET', headers });
+        const r = await tlsFetch(url, { method: 'GET', headers });
         let j: any = null;
         try { j = await r.json(); } catch {}
 
@@ -349,7 +350,7 @@ export class QwenService implements LlmEngine {
       const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
       let res: Response;
       try {
-        res = await fetch(url, {
+        res = await tlsFetch(url, {
           method: 'POST',
           headers: this.buildHeaders(),
           body: JSON.stringify({ title: 'Sovereign Factory', models: [model] }),
@@ -491,7 +492,7 @@ export class QwenService implements LlmEngine {
 
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await tlsFetch(url, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(this.buildBody(chatId, prompt, options)),
@@ -500,7 +501,7 @@ export class QwenService implements LlmEngine {
       if (res.status === 401 || res.status === 403) {
         try { await res.body?.cancel(); } catch {}
         await this.refreshAccessToken();
-        res = await fetch(url, {
+        res = await tlsFetch(url, {
           method: 'POST',
           headers: this.buildHeaders(),
           body: JSON.stringify(this.buildBody(chatId, prompt, options)),
@@ -629,7 +630,7 @@ export class QwenService implements LlmEngine {
     const timer = setTimeout(() => controller.abort(), 300_000);
     let res: Response;
     try {
-      res = await fetch(base + '/v1/chat/completions', {
+      res = await tlsFetch(base + '/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'qwen', messages }),
@@ -702,7 +703,7 @@ export class QwenService implements LlmEngine {
 
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await tlsFetch(url, {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(this.buildBody(chatId, prompt, options)),
@@ -711,7 +712,7 @@ export class QwenService implements LlmEngine {
       if (res.status === 401 || res.status === 403) {
         try { await res.body?.cancel(); } catch {}
         await this.refreshAccessToken();
-        res = await fetch(url, {
+        res = await tlsFetch(url, {
           method: 'POST',
           headers: this.buildHeaders(),
           body: JSON.stringify(this.buildBody(chatId, prompt, options)),

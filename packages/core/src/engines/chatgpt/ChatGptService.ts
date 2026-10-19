@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 // ChatGptService — chatgpt.com cookie+token client.
 // Fixes 403 "Unusual activity" by using the correct two-call Sentinel flow:
 //   POST /backend-api/sentinel/chat-requirements/prepare   → prepare_token
@@ -101,7 +102,7 @@ async function fetchWithContext(url: string, init: RequestInit, timeoutMs = 6000
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: ctrl.signal });
+    return await tlsFetch(url, { ...init, signal: ctrl.signal });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`fetch(${url.replace('https://chatgpt.com', '')}) failed: ${msg}`);

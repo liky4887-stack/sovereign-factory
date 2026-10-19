@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 // GeminiService — web-session client for gemini.google.com.
 // Cookie + at-token, matching the Kimi pattern. Auth signs each request
 // with SAPISIDHASH = SHA1(timestamp + " " + SAPISID + " " + origin).
@@ -145,7 +146,7 @@ export class GeminiService {
     }
     if (!this.cookies) throw new Error('Gemini cookies missing');
     try {
-      const res = await fetch('https://gemini.google.com/app', {
+      const res = await tlsFetch('https://gemini.google.com/app', {
         method: 'GET',
         headers: {
           cookie: this.cookies,
@@ -264,7 +265,7 @@ export class GeminiService {
         '&_reqid=' + reqId +
         (liveFsid ? '&f.sid=' + encodeURIComponent(liveFsid) : '') +
         '&rt=c';
-      const res = await fetch(url, {
+      const res = await tlsFetch(url, {
         method: 'POST',
         headers,
         body: body.toString(),

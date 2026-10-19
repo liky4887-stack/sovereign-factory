@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 // Kimi engine — talks to the local Deno gateway instead of the Kimi
 // web endpoint directly.
 //
@@ -97,7 +98,7 @@ export class KimiService implements LlmEngine {
       throw new KimiNoCredentialsError();
     }
     const model = options.model || GATEWAY_MODEL;
-    const r = await fetch(GATEWAY_URL + '/v1/chat/completions', {
+    const r = await tlsFetch(GATEWAY_URL + '/v1/chat/completions', {
       method: 'POST',
       headers: this.gatewayHeaders(),
       body: JSON.stringify({
@@ -167,7 +168,7 @@ export class KimiService implements LlmEngine {
     let gatewayOk = false;
     let gatewayErr: string | null = null;
     try {
-      const h = await fetch(GATEWAY_URL + '/health', {
+      const h = await tlsFetch(GATEWAY_URL + '/health', {
         signal: AbortSignal.timeout(3000),
       });
       gatewayOk = h.ok;

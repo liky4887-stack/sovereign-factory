@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 import { CredentialStore } from '../storage/CredentialStore';
 import { PowSolver } from '../pow/PowSolver';
 import {
@@ -230,7 +231,7 @@ export class DeepSeekService {
     const timer = setTimeout(() => controller.abort(), this.opts.requestTimeoutMs);
     let response: Response;
     try {
-      response = await fetch(url, { ...init, signal: init.signal ?? controller.signal });
+      response = await tlsFetch(url, { ...init, signal: init.signal ?? controller.signal });
     } finally {
       clearTimeout(timer);
     }
@@ -372,7 +373,7 @@ export class DeepSeekService {
     if (!userToken) userToken = __c?.bearerToken ?? null;
     if (!userToken) throw new Error('DeepSeek userToken missing — re-extract from chat.deepseek.com localStorage');
 
-    const res = await fetch('https://chat.deepseek.com/api/v0/users/current', {
+    const res = await tlsFetch('https://chat.deepseek.com/api/v0/users/current', {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${userToken}`,
@@ -476,7 +477,7 @@ export class DeepSeekService {
 
     let response: Response;
     try {
-      response = await fetch(url, {
+      response = await tlsFetch(url, {
         method: 'POST',
         headers: this.buildHeaders({ 'x-ds-pow-response': powHeader, 'accept': 'text/event-stream' }),
         body: JSON.stringify(this.buildBody(sessionId, prompt, options)),
@@ -574,7 +575,7 @@ const state: SseState = { text: '', thinking: '', lastPath: null, currentType: n
       ?? (await this.refreshPathToken(targetPath, true)).token;
 
     const url = targetPath.startsWith('http') ? targetPath : this.opts.baseUrl + targetPath;
-    const response = await fetch(url, {
+    const response = await tlsFetch(url, {
       method: 'POST',
       headers: this.buildHeaders({ 'x-ds-pow-response': powHeader, 'accept': 'text/event-stream' }),
       body: JSON.stringify(this.buildBody(sessionId, prompt, options)),

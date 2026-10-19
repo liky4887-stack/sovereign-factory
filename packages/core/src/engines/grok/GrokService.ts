@@ -1,3 +1,4 @@
+import { tlsFetch } from '../../shared/tlsFetch';
 // GrokService — web-session client for grok.com. Cookie + bearer token,
 // matching the Kimi pattern. No API key. Cloudflare sits in front, so
 // cookies must include cf_clearance + __cf_bm from a fresh browser session.
@@ -195,7 +196,7 @@ export class GrokService {
     const timer = setTimeout(() => ctrl.abort(), this.cfg.requestTimeoutMs ?? 120_000);
 
     try {
-      const res = await fetch(this.cfg.baseUrl + '/rest/app-chat/conversations/new', {
+      const res = await tlsFetch(this.cfg.baseUrl + '/rest/app-chat/conversations/new', {
         method: 'POST',
         headers: this.buildHeaders(),
         body: JSON.stringify(body),
