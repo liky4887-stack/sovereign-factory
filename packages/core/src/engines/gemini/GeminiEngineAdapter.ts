@@ -1,3 +1,5 @@
+// GeminiEngineAdapter — thin delegate to GeminiService.
+
 import { GeminiService } from './GeminiService';
 import {
   LlmEngine,
@@ -15,11 +17,17 @@ export class GeminiEngineAdapter implements LlmEngine {
 
   constructor(private readonly svc: GeminiService) {}
 
-  async call(input: string | Array<{ role: string; content: string }>, options: LlmCallOptions = {}): Promise<LlmResponse> {
+  async call(
+    input: string | Array<{ role: string; content: string }>,
+    options: LlmCallOptions = {},
+  ): Promise<LlmResponse> {
     return this.svc.call(input, options);
   }
 
-  async *stream(input: string | Array<{ role: string; content: string }>, options: LlmCallOptions = {}): AsyncGenerator<LlmStreamChunk, void, unknown> {
+  async *stream(
+    input: string | Array<{ role: string; content: string }>,
+    options: LlmCallOptions = {},
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
     yield* this.svc.stream(input, options);
   }
 
@@ -27,21 +35,19 @@ export class GeminiEngineAdapter implements LlmEngine {
     return this.svc.setCredentials(input);
   }
 
-  clearCredentials(): void { this.svc.clearCredentials(); }
-  hasCredentials(): boolean { return this.svc.hasCredentials(); }
+  clearCredentials(): void {
+    this.svc.clearCredentials();
+  }
+
+  hasCredentials(): boolean {
+    return this.svc.hasCredentials();
+  }
 
   getCredentialsRedacted(): LlmCredentialsRedacted {
-    const r = this.svc.getCredentialsRedacted();
-    return {
-      configured: this.svc.hasCredentials(),
-      hasCookies: (r.cookies?.length ?? 0) > 0,
-      hasBearer: r.atToken !== null,
-      hasExtraHeaders: r.extraHeaders !== null,
-      acquiredAt: r.acquiredAt,
-    };
+    return this.svc.getCredentialsRedacted();
   }
 
   async healthCheck(): Promise<LlmHealth> {
-    return (await this.svc.healthCheck()) as LlmHealth;
+    return this.svc.healthCheck();
   }
 }
